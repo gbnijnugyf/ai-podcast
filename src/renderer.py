@@ -7,6 +7,8 @@
 import os
 import subprocess
 import sys
+import threading
+import time
 
 import yaml
 
@@ -103,14 +105,27 @@ class Renderer:
         ]
 
         print(f"执行动画渲染 ({duration_s}s)...")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=os.getcwd(),
+
+        stop_spinner = threading.Event()
+        spinner_thread = threading.Thread(
+            target=self._spinner, args=(stop_spinner,), daemon=True
         )
+        spinner_thread.start()
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=os.getcwd(),
+            )
+        finally:
+            stop_spinner.set()
+            spinner_thread.join()
+            sys.stdout.write("\r" + " " * 60 + "\r")
+            sys.stdout.flush()
 
         stdout = result.stdout or ""
         stderr = result.stderr or ""
@@ -121,6 +136,19 @@ class Renderer:
 
         print(stdout[-500:] if len(stdout) > 500 else stdout)
         return output_dir
+
+    @staticmethod
+    def _spinner(stop_event: threading.Event) -> None:
+        chars = "|/-\\"
+        idx = 0
+        start = time.time()
+        while not stop_event.is_set():
+            elapsed = time.time() - start
+            mins, secs = divmod(int(elapsed), 60)
+            sys.stdout.write(f"\r  Blender 渲染中 {chars[idx % len(chars)]}  已耗时 {mins:02d}:{secs:02d}")
+            sys.stdout.flush()
+            idx += 1
+            stop_event.wait(0.3)
 
 
 if __name__ == "__main__":

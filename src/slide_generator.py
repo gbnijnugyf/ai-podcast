@@ -13,7 +13,7 @@ from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 
 
-OUTLINE_PROMPT = """你是一个PPT大纲提取专家。请将以下讲解文本分页，提取每页的标题和要点。
+OUTLINE_PROMPT = """你是一个PPT大纲提取专家，同时也擅长将书面内容改写为口语化的讲解旁白。请将以下讲解文本分页，提取每页的标题和要点。
 
 要求：
 1. 每页对应一个主题/知识点
@@ -23,13 +23,19 @@ OUTLINE_PROMPT = """你是一个PPT大纲提取专家。请将以下讲解文本
 5. 最后一页为结尾页（type=ending），标题为"谢谢观看"或"总结"
 6. 中间如果有大的主题切换，插入章节分隔页（type=section，只有章节标题）
 7. 正文内容页 type=content
-8. narration 字段保留该页对应的完整讲解原文
+8. **narration 字段非常重要**，它是数字人口播的旁白脚本，需要满足：
+   - 基于该页原文内容改写，但**必须口语化、有网感**，像一个年轻的 UP 主或财经博主在讲解
+   - 可以使用口头禅、语气词（"说白了"、"懂的都懂"、"离谱"、"绝了"、"家人们"等）
+   - 适当穿插网络热梗或流行表达，但不要堆砌，保持信息量
+   - 语气要自然、有节奏感，像在跟朋友聊天而不是念稿
+   - 必须保留原文的关键数据和事实，不能编造
+   - 每页 narration 长度 80-200 字左右
 
 请严格以如下JSON格式输出，不要输出其他内容：
 {
   "slides": [
     {"type": "cover", "title": "主标题", "subtitle": "副标题"},
-    {"type": "content", "title": "页面标题", "points": ["详细要点1", "详细要点2", "详细要点3"], "narration": "讲解原文"},
+    {"type": "content", "title": "页面标题", "points": ["详细要点1", "详细要点2", "详细要点3"], "narration": "口语化讲解旁白"},
     {"type": "section", "title": "章节标题"},
     {"type": "ending", "title": "谢谢观看"}
   ]
