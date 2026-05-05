@@ -107,8 +107,12 @@ ai-podcast/
 │   ├── blender_driver.py    # Blender 驱动脚本（在 Blender 内执行）
 │   ├── renderer.py          # 渲染控制
 │   └── composer.py          # FFmpeg 视频合成
-├── templates/
+├── asset/templates/
 │   └── slide_bg/            # 从 PPTX 模板导出的背景图（去除文字后的 PNG）
+│       ├── 封面.png          # 封面页背景（4478x2505, RGBA）
+│       ├── 章节分隔.png      # 章节过渡页背景（2199x1237, RGBA）
+│       ├── 内容页.png        # 正文内容页背景（2200x1238, RGBA）
+│       └── 结尾页.png        # 结尾页背景（2200x1238, RGBA）
 ├── data/
 │   ├── viseme_map.json      # 中文音素→Viseme 映射表
 │   └── fonts/               # 中文字体文件（思源黑体等）
@@ -278,10 +282,10 @@ Pillow 合成：
 
 ### 步骤 2：幻灯片模板背景图准备
 
-- [ ] 从 PPTX 模板中挑选页面类型（封面、章节、内容、结尾）
-- [ ] 清除文字后导出为 PNG 背景图
-- [ ] 存入 `templates/slide_bg/`
-- [ ] 交付物：3-4 张模板背景图
+- [x] 从 PPTX 模板中挑选页面类型（封面、章节分隔、内容页、结尾页）
+- [x] 清除文字后导出为 PNG 背景图（4 张，约 4K 分辨率）
+- [x] 存入 `asset/templates/slide_bg/`
+- [x] 交付物：4 张模板背景图 ✅ 已通过
 
 ### 步骤 3：幻灯片自动生成模块
 
