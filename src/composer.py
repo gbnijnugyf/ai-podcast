@@ -6,6 +6,7 @@
 
 import os
 import subprocess
+import time
 
 import yaml
 
@@ -28,7 +29,8 @@ class VideoComposer:
 
     def _run_ffmpeg(self, cmd: list[str], desc: str = ""):
         """执行 FFmpeg 命令。"""
-        print(f"  FFmpeg: {desc}")
+        print(f"  FFmpeg: {desc}...", end="", flush=True)
+        t0 = time.time()
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -36,10 +38,13 @@ class VideoComposer:
             encoding="utf-8",
             errors="replace",
         )
+        elapsed = time.time() - t0
         if result.returncode != 0:
+            print(f" 失败 ({elapsed:.1f}s)")
             stderr = result.stderr or ""
             print(f"  FFmpeg 错误:\n{stderr[-500:]}")
             raise RuntimeError(f"FFmpeg 失败: {desc}")
+        print(f" 完成 ({elapsed:.1f}s)")
 
     def concat_audio(self, audio_paths: list[str], output_path: str) -> str:
         """将多个音频文件拼接为一个。"""

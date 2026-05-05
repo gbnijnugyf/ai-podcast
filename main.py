@@ -35,10 +35,17 @@ def main():
     parser.add_argument("--model", type=str, default="asset/swat.fbx", help="3D 模型路径")
     parser.add_argument("--anim", type=str, default="asset/animations/Talking.fbx", help="动画 FBX 路径")
     parser.add_argument("--output", type=str, default="output/video/output.mp4", help="输出视频路径")
+    parser.add_argument("--voice", type=str, help="TTS 音色（如 zh-CN-XiaoxiaoNeural）")
+    parser.add_argument("--rate", type=str, help="TTS 语速（如 +10%%, -10%%）")
     parser.add_argument("--config", type=str, default="config.yaml", help="配置文件路径")
     args = parser.parse_args()
 
     config = load_config(args.config)
+
+    if args.voice:
+        config["tts"]["voice"] = args.voice
+    if args.rate:
+        config["tts"]["rate"] = args.rate
 
     # -------------------------------------------------------
     # 1. 获取输入文本
@@ -63,6 +70,8 @@ def main():
         print("使用内置示例文本")
 
     print(f"文本长度: {len(text)} 字")
+    print(f"TTS 音色: {config['tts']['voice']}")
+    print(f"TTS 语速: {config['tts'].get('rate', '+0%')}")
     start_time = time.time()
 
     # -------------------------------------------------------
@@ -94,6 +103,10 @@ def main():
     print("=" * 50)
 
     tts = TTSEngine(args.config)
+    if args.voice:
+        tts.voice = args.voice
+    if args.rate:
+        tts.rate = args.rate
     audio_paths, all_timestamps = tts.synthesize_slides(slides_data)
 
     # 拼接所有音频
@@ -125,12 +138,19 @@ def main():
             if f.startswith("frame_") and f.endswith(".png"):
                 os.remove(os.path.join(avatar_dir, f))
 
+    total_frames = int(total_audio_duration * config.get("render", {}).get("fps", 30))
+    print(f"  渲染 {total_frames} 帧 ({total_audio_duration:.1f}s)，请耐心等待...")
+    render_start = time.time()
+
     renderer.render_animation(
         fbx_path=args.model,
         duration_s=total_audio_duration,
         anim_path=args.anim,
         output_dir=avatar_dir,
     )
+
+    render_elapsed = time.time() - render_start
+    print(f"  渲染用时: {render_elapsed:.1f}s ({total_frames / max(render_elapsed, 0.1):.1f} fps)")
 
     # -------------------------------------------------------
     # 5. 视频合成

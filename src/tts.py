@@ -20,6 +20,7 @@ class TTSEngine:
 
         tts_cfg = self.config["tts"]
         self.voice = tts_cfg.get("voice", "zh-CN-YunxiNeural")
+        self.rate = tts_cfg.get("rate", "+0%")
         self.output_dir = tts_cfg.get("output_dir", "output/audio")
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -27,7 +28,7 @@ class TTSEngine:
         self, text: str, audio_path: str
     ) -> list[dict]:
         """合成单段文本，返回时间戳列表（句子级或词级，取决于 edge-tts 版本）。"""
-        communicate = edge_tts.Communicate(text, self.voice)
+        communicate = edge_tts.Communicate(text, self.voice, rate=self.rate)
         timestamps: list[dict] = []
 
         with open(audio_path, "wb") as f:

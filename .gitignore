@@ -1,3 +1,4 @@
 config.yaml
 output/
 data/
+__pycache__/
