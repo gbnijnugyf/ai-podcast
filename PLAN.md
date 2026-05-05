@@ -289,11 +289,11 @@ Pillow 合成：
 
 ### 步骤 3：幻灯片自动生成模块
 
-- [ ] 配置 DeepSeek API
-- [ ] 实现 `src/slide_generator.py`：输入文本 → DeepSeek 提取大纲 → Pillow 合成幻灯片图片
-- [ ] 下载并配置中文字体（思源黑体）
-- [ ] 验证生成的幻灯片图片效果
-- [ ] 交付物：输入文本 → 输出幻灯片图片序列
+- [x] 配置 DeepSeek API
+- [x] 实现 `src/slide_generator.py`：输入文本 → DeepSeek 提取大纲 → Pillow 合成幻灯片图片
+- [x] 使用 Windows 自带微软雅黑字体（msyh.ttc）
+- [x] 验证生成的幻灯片图片效果（封面/内容/结尾页）
+- [x] 交付物：输入文本 → 输出幻灯片图片序列 + outline.json ✅ 已通过
 
 ### 步骤 4：TTS 语音合成模块
 
