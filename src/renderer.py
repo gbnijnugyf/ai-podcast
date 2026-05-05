@@ -77,7 +77,7 @@ class Renderer:
         self,
         fbx_path: str = "asset/swat.fbx",
         duration_s: float = 3.0,
-        anim_path: str = "asset/animations/Talking.fbx",
+        anim_path: str = "asset/animations",
         output_dir: str | None = None,
     ) -> str:
         """渲染带肢体动画的帧序列。"""

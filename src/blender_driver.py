@@ -8,6 +8,7 @@ Blender 驱动脚本
 import os
 import sys
 import math
+import random
 
 import bpy
 
@@ -117,7 +118,7 @@ def setup_lighting():
 
 
 def setup_render(width: int = 480, height: int = 480, transparent: bool = True):
-    """配置渲染参数。"""
+    """配置渲染参数（含 EEVEE 性能优化）。"""
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_EEVEE_NEXT"
     scene.render.resolution_x = width
@@ -131,20 +132,25 @@ def setup_render(width: int = 480, height: int = 480, transparent: bool = True):
 
     scene.render.fps = 30
 
+    eevee = scene.eevee
+    eevee.taa_render_samples = 16
+    for prop_name in ["use_gtao", "use_bloom", "use_ssr", "use_motion_blur"]:
+        try:
+            setattr(eevee, prop_name, False)
+        except Exception:
+            pass
 
-def load_animation(armature, anim_fbx_path: str):
-    """从独立 FBX 文件加载动画并应用到 armature。"""
+
+def load_animation_action(anim_fbx_path: str):
+    """从独立 FBX 文件加载动画，返回 Action 对象。"""
     anim_fbx_path = os.path.abspath(anim_fbx_path)
     if not os.path.exists(anim_fbx_path):
         print(f"警告: 动画文件不存在 {anim_fbx_path}")
-        return
+        return None
 
-    # 记住当前对象集合
     existing_objects = set(bpy.data.objects.keys())
-
     bpy.ops.import_scene.fbx(filepath=anim_fbx_path)
 
-    # 找到新导入的 armature（动画数据源）
     anim_armature = None
     new_objects = []
     for obj in bpy.data.objects:
@@ -153,42 +159,100 @@ def load_animation(armature, anim_fbx_path: str):
             if obj.type == "ARMATURE":
                 anim_armature = obj
 
+    action = None
     if anim_armature and anim_armature.animation_data:
         action = anim_armature.animation_data.action
         if action:
-            if not armature.animation_data:
-                armature.animation_data_create()
-            armature.animation_data.action = action
-            print(f"  动画已应用: {action.name} ({action.frame_range[0]:.0f}~{action.frame_range[1]:.0f} 帧)")
+            action.use_fake_user = True
+            print(f"  动画加载: {action.name} ({action.frame_range[0]:.0f}~{action.frame_range[1]:.0f} 帧) <- {os.path.basename(anim_fbx_path)}")
 
-    # 删除导入的多余对象（保留动画数据）
     for obj in new_objects:
-        if obj != armature:
-            bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+    return action
+
+
+def load_all_animations(anim_path: str):
+    """加载动画，支持单文件或目录。返回 Action 列表。"""
+    anim_path = os.path.abspath(anim_path)
+    actions = []
+
+    if os.path.isdir(anim_path):
+        fbx_files = sorted([
+            os.path.join(anim_path, f)
+            for f in os.listdir(anim_path)
+            if f.lower().endswith(".fbx")
+        ])
+        print(f"  动画目录: {anim_path} ({len(fbx_files)} 个文件)")
+        for fp in fbx_files:
+            act = load_animation_action(fp)
+            if act:
+                actions.append(act)
+    else:
+        act = load_animation_action(anim_path)
+        if act:
+            actions.append(act)
+
+    return actions
 
 
 def setup_animation(armature, anim_path: str, fps: int = 30, duration_s: float = 3.0):
-    """设置动画：加载 Mixamo 动画 + 设置帧范围。"""
-    load_animation(armature, anim_path)
+    """设置动画：加载多个 Mixamo 动画，用 NLA 随机拼接填满时长。"""
+    actions = load_all_animations(anim_path)
 
     total_frames = int(fps * duration_s)
     scene = bpy.context.scene
     scene.frame_start = 1
+    scene.frame_end = total_frames
 
-    if armature.animation_data and armature.animation_data.action:
-        action = armature.animation_data.action
+    if not actions:
+        print("  警告: 未加载到任何动画")
+        return
+
+    if not armature.animation_data:
+        armature.animation_data_create()
+
+    # 单个动画时退回循环模式
+    if len(actions) == 1:
+        action = actions[0]
+        armature.animation_data.action = action
         anim_frames = int(action.frame_range[1] - action.frame_range[0])
         if anim_frames > 0 and total_frames > anim_frames:
-            scene.frame_end = total_frames
-            # 循环动画
             for fcurve in action.fcurves:
-                mod = fcurve.modifiers.new(type="CYCLES")
-        else:
-            scene.frame_end = min(total_frames, anim_frames)
-    else:
-        scene.frame_end = total_frames
+                fcurve.modifiers.new(type="CYCLES")
+        print(f"  单动画循环: {action.name}, 帧范围 1~{total_frames}")
+        return
 
-    print(f"  帧范围: {scene.frame_start} ~ {scene.frame_end}")
+    armature.animation_data.action = None
+
+    track = armature.animation_data.nla_tracks.new()
+    track.name = "MultiAnim"
+
+    frame_cursor = 1
+    clip_index = 0
+
+    shuffled = list(actions)
+    random.shuffle(shuffled)
+
+    while frame_cursor < total_frames:
+        action = shuffled[clip_index % len(shuffled)]
+        clip_index += 1
+
+        if clip_index % len(shuffled) == 0:
+            random.shuffle(shuffled)
+
+        anim_len = int(action.frame_range[1] - action.frame_range[0])
+        if anim_len <= 0:
+            continue
+
+        try:
+            strip = track.strips.new(action.name, int(frame_cursor), action)
+            frame_cursor += anim_len
+        except Exception as e:
+            print(f"  NLA strip 失败 ({action.name}): {e}")
+            frame_cursor += anim_len
+
+    print(f"  NLA 拼接完成: {clip_index} 片段, 帧 1~{total_frames}")
 
 
 def render_frame(output_path: str, frame: int = 1):
@@ -228,7 +292,9 @@ def parse_args():
 
     args["fbx_path"] = os.path.abspath(args["fbx_path"])
     args["output_path"] = os.path.abspath(args["output_path"])
-    args["anim_path"] = os.path.abspath(args["anim_path"])
+    # anim_path can be a file or directory
+    if args["anim_path"]:
+        args["anim_path"] = os.path.abspath(args["anim_path"])
 
     return args
 

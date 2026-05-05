@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--text-file", type=str, help="从文件读取讲解文本")
     parser.add_argument("--slides-dir", type=str, help="已有幻灯片图片目录（跳过自动生成）")
     parser.add_argument("--model", type=str, default="asset/swat.fbx", help="3D 模型路径")
-    parser.add_argument("--anim", type=str, default="asset/animations/Talking.fbx", help="动画 FBX 路径")
+    parser.add_argument("--anim", type=str, default="asset/animations", help="动画 FBX 文件或目录路径")
     parser.add_argument("--output", type=str, default="output/video/output.mp4", help="输出视频路径")
     parser.add_argument("--voice", type=str, help="TTS 音色（如 zh-CN-XiaoxiaoNeural）")
     parser.add_argument("--rate", type=str, help="TTS 语速（如 +10%%, -10%%）")
