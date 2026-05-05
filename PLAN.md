@@ -312,11 +312,12 @@ Pillow 合成：
 
 ### 步骤 6：Blender 模型加载与场景搭建
 
-- [ ] 实现 Blender Python 脚本：加载 `swat.fbx` 模型
-- [ ] 设置摄像机位（半身/上半身构图）
-- [ ] 设置灯光和透明背景
-- [ ] 验证渲染一帧的效果
-- [ ] 交付物：Blender 脚本 + 渲染出的单帧截图
+- [x] 实现 Blender Python 脚本：`src/blender_driver.py` + `src/renderer.py`
+- [x] 加载 `swat.fbx` 模型（65 根骨骼），自动检测模型尺寸
+- [x] 设置摄像机位（半身构图，自动适配模型高度）
+- [x] 设置三点光照 + 透明背景（EEVEE + RGBA）
+- [x] 渲染测试帧：`output/avatar/test_frame.png` ✅ 已通过
+- [x] 备注：swat 模型脸部被面罩遮挡，口型驱动视觉效果受限
 
 ### 步骤 7：口型驱动
 
