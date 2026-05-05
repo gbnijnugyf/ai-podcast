@@ -304,10 +304,11 @@ Pillow 合成：
 
 ### 步骤 5：音素对齐模块
 
-- [ ] 搭建音素对齐方案（MFA 或 aeneas 或简化方案）
-- [ ] 实现 `src/aligner.py`：输入音频+文本 → 输出音素级时间戳
-- [ ] 验证中文音素对齐精度
-- [ ] 交付物：可独立运行的对齐脚本，输出 phoneme 时间轴
+- [x] 采用 pypinyin + 比例分配方案（演示级，后续可升级 MFA）
+- [x] 实现 `src/aligner.py`：文本 → 拼音音素序列 → 按时长比例分配时间戳
+- [x] 实现 `src/viseme.py`：音素 → Viseme 映射 + 张嘴权重
+- [x] 验证：音素拆分正确，viseme 映射合理
+- [x] 交付物：音素对齐 + viseme 时间轴 + `data/viseme_map.json` ✅ 已通过
 
 ### 步骤 6：Blender 模型加载与场景搭建
 
