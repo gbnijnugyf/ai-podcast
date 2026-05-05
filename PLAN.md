@@ -269,12 +269,12 @@ Pillow 合成：
 
 ### 步骤 1：环境准备与验证
 
-- [ ] 确认 conda 环境 `ai-podcast`（Python 3.11）就绪
-- [ ] 确认 Blender 4.x 已安装，验证命令行调用 `blender --version`
-- [ ] 确认 FFmpeg 已安装，验证 `ffmpeg -version`
-- [ ] 安装所需 Python 包
-- [ ] 验证 `asset/swat.fbx` 模型可在 Blender 中正常打开和预览
-- [ ] 交付物：环境就绪报告
+- [x] 确认 conda 环境 `ai-podcast`（Python 3.11）就绪
+- [x] 确认 Blender 4.x 已安装，验证命令行调用 `blender --version`
+- [x] 确认 FFmpeg 已安装，验证 `ffmpeg -version`
+- [x] 安装所需 Python 包（edge-tts, Pillow, openai, pyyaml, numpy）
+- [x] 验证 `asset/swat.fbx` 模型可在 Blender 中正常打开和预览
+- [x] 交付物：环境就绪报告 ✅ 已通过
 
 ### 步骤 2：幻灯片模板背景图准备
 
