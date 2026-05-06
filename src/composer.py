@@ -95,6 +95,7 @@ class VideoComposer:
         avatar_frame_dir: str,
         audio_path: str,
         output_path: str | None = None,
+        srt_path: str | None = None,
     ) -> str:
         """合成最终视频。
 
@@ -104,6 +105,7 @@ class VideoComposer:
             avatar_frame_dir: 数字人动画帧目录（frame_0001.png, frame_0002.png, ...）
             audio_path: 音频文件路径
             output_path: 输出视频路径
+            srt_path: SRT 字幕文件路径
         """
         if output_path is None:
             output_path = os.path.join(self.output_dir, "output.mp4")
@@ -111,14 +113,11 @@ class VideoComposer:
         total_duration = sum(slide_durations)
         print(f"  总时长: {total_duration:.1f}s, 幻灯片: {len(slide_paths)} 页")
 
-        # 1. 生成幻灯片视频（每页持续对应时长）
         slide_video = os.path.join(self.output_dir, "_slides.mp4")
         self._make_slide_video(slide_paths, slide_durations, slide_video)
 
-        # 2. 合成：幻灯片背景 + 数字人叠加 + 音频
-        self._compose_final(slide_video, avatar_frame_dir, audio_path, output_path, total_duration)
+        self._compose_final(slide_video, avatar_frame_dir, audio_path, output_path, total_duration, srt_path)
 
-        # 清理临时文件
         if os.path.exists(slide_video):
             os.remove(slide_video)
 
@@ -162,13 +161,13 @@ class VideoComposer:
         audio_path: str,
         output_path: str,
         total_duration: float,
+        srt_path: str | None = None,
     ):
-        """最终合成：幻灯片 + 数字人叠加 + 音频。"""
+        """最终合成：幻灯片 + 数字人叠加 + 字幕 + 音频。"""
         avatar_pattern = os.path.join(os.path.abspath(avatar_frame_dir), "frame_%04d.png")
 
         avatar_w = self.avatar_size
         margin = 20
-        # 背景矩形比数字人稍大，半透明深灰色
         bg_w = avatar_w + 20
         bg_h = avatar_w + 16
         bg_x = f"1920-{bg_w}-{margin}"
@@ -176,19 +175,26 @@ class VideoComposer:
         overlay_x = f"1920-overlay_w-{margin + 10}"
         overlay_y = f"1080-overlay_h-{margin + 10}"
 
+        filter_chain = (
+            f"[0:v]drawbox=x={bg_x}:y={bg_y}:w={bg_w}:h={bg_h}:color=white@0.5:t=fill[bg];"
+            f"[1:v]scale={avatar_w}:-1[avatar];"
+            f"[bg][avatar]overlay={overlay_x}:{overlay_y}:shortest=1[composed]"
+        )
+
+        if srt_path and os.path.exists(srt_path):
+            srt_rel = os.path.relpath(srt_path).replace("\\", "/")
+            subtitle_style = "FontName=Microsoft YaHei,FontSize=14,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,MarginV=50"
+            filter_chain += f";[composed]subtitles='{srt_rel}':force_style='{subtitle_style}'[out]"
+        else:
+            filter_chain += ";[composed]copy[out]"
+
         self._run_ffmpeg([
             self.ffmpeg, "-y",
             "-i", slide_video,
             "-framerate", str(self.fps),
             "-i", avatar_pattern,
             "-i", audio_path,
-            "-filter_complex",
-            # 先在幻灯片上画一个半透明深色矩形作为数字人背景
-            f"[0:v]drawbox=x={bg_x}:y={bg_y}:w={bg_w}:h={bg_h}:color=white@0.5:t=fill[bg];"
-            # 缩放数字人
-            f"[1:v]scale={avatar_w}:-1[avatar];"
-            # 叠加数字人到背景框上
-            f"[bg][avatar]overlay={overlay_x}:{overlay_y}:shortest=1[out]",
+            "-filter_complex", filter_chain,
             "-map", "[out]",
             "-map", "2:a",
             "-c:v", "libx264",

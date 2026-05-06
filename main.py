@@ -27,6 +27,73 @@ def load_config(config_path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
+def _split_narration(text: str, max_chars: int = 18) -> list[str]:
+    """将 narration 文本按标点或字数拆分为字幕行。"""
+    import re
+    sentences = re.split(r'([，。！？；、,\.!\?;])', text)
+
+    merged = []
+    buf = ""
+    for i, seg in enumerate(sentences):
+        if not seg:
+            continue
+        buf += seg
+        is_punct = bool(re.match(r'^[，。！？；、,\.!\?;]$', seg))
+        if is_punct or i == len(sentences) - 1:
+            if buf.strip():
+                merged.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        merged.append(buf.strip())
+
+    chunks = []
+    for sent in merged:
+        while len(sent) > max_chars:
+            chunks.append(sent[:max_chars])
+            sent = sent[max_chars:]
+        if sent:
+            chunks.append(sent)
+    return chunks
+
+
+def _format_srt_time(seconds: float) -> str:
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds - int(seconds)) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def generate_srt(slides_data: list[dict], slide_durations: list[float], output_path: str) -> str:
+    """根据 slides_data 和每页时长生成 SRT 字幕文件。"""
+    entries = []
+    idx = 1
+    time_offset = 0.0
+
+    for i, sd in enumerate(slides_data):
+        narration = sd.get("narration", "").strip()
+        dur = slide_durations[i] if i < len(slide_durations) else 3.0
+
+        if narration:
+            chunks = _split_narration(narration)
+            chunk_dur = dur / max(len(chunks), 1)
+
+            for j, chunk in enumerate(chunks):
+                start = time_offset + j * chunk_dur
+                end = start + chunk_dur - 0.05
+                entries.append(f"{idx}\n{_format_srt_time(start)} --> {_format_srt_time(end)}\n{chunk}\n")
+                idx += 1
+
+        time_offset += dur
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(entries))
+
+    print(f"  字幕文件: {output_path} ({idx - 1} 条)")
+    return output_path
+
+
 def main():
     parser = argparse.ArgumentParser(description="数字人口播视频生成工具")
     parser.add_argument("--text", type=str, help="讲解文本内容")
@@ -153,7 +220,13 @@ def main():
     print(f"  渲染用时: {render_elapsed:.1f}s ({total_frames / max(render_elapsed, 0.1):.1f} fps)")
 
     # -------------------------------------------------------
-    # 5. 视频合成
+    # 5. 生成字幕
+    # -------------------------------------------------------
+    srt_path = os.path.join(config.get("video", {}).get("output_dir", "output/video"), "subtitles.srt")
+    generate_srt(slides_data, slide_durations, srt_path)
+
+    # -------------------------------------------------------
+    # 6. 视频合成
     # -------------------------------------------------------
     print("\n" + "=" * 50)
     print("【第 4 步】视频合成")
@@ -165,6 +238,7 @@ def main():
         avatar_frame_dir=avatar_dir,
         audio_path=full_audio,
         output_path=args.output,
+        srt_path=srt_path,
     )
 
     elapsed = time.time() - start_time
