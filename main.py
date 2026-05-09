@@ -30,7 +30,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
 def _split_narration(text: str, max_chars: int = 18) -> list[str]:
     """将 narration 文本按标点或字数拆分为字幕行。"""
     import re
-    sentences = re.split(r'([，。！？；、,\.!\?;])', text)
+    sentences = re.split(r'([，。！？；,!\?;])', text)
 
     merged = []
     buf = ""
@@ -38,7 +38,7 @@ def _split_narration(text: str, max_chars: int = 18) -> list[str]:
         if not seg:
             continue
         buf += seg
-        is_punct = bool(re.match(r'^[，。！？；、,\.!\?;]$', seg))
+        is_punct = bool(re.match(r'^[，。！？；,!\?;]$', seg))
         if is_punct or i == len(sentences) - 1:
             if buf.strip():
                 merged.append(buf.strip())
