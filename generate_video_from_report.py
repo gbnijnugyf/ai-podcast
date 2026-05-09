@@ -84,6 +84,7 @@ def main() -> None:
     parser.add_argument("--voice", type=str, help="TTS 音色")
     parser.add_argument("--rate", type=str, help="TTS 语速（如 +10%%）")
     parser.add_argument("--output", type=str, default=None, help="输出视频路径")
+    parser.add_argument("--no-avatar", action="store_true", help="跳过数字人渲染（无需 Blender）")
     parser.add_argument("--config", type=str, default="config.yaml", help="配置文件路径")
     args = parser.parse_args()
 
@@ -106,6 +107,8 @@ def main() -> None:
         cmd += ["--rate", args.rate]
     if args.output:
         cmd += ["--output", args.output]
+    if args.no_avatar:
+        cmd += ["--no-avatar"]
     if args.config:
         cmd += ["--config", args.config]
 

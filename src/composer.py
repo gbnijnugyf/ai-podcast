@@ -207,5 +207,55 @@ class VideoComposer:
         print(f"  视频已生成: {output_path}")
 
 
+    def compose_slides_only(
+        self,
+        slide_paths: list[str],
+        slide_durations: list[float],
+        audio_path: str,
+        output_path: str | None = None,
+        srt_path: str | None = None,
+    ) -> str:
+        """合成视频（无数字人叠加）：幻灯片 + 音频 + 字幕。"""
+        if output_path is None:
+            output_path = os.path.join(self.output_dir, "output.mp4")
+
+        total_duration = sum(slide_durations)
+        print(f"  总时长: {total_duration:.1f}s, 幻灯片: {len(slide_paths)} 页（无数字人模式）")
+
+        slide_video = os.path.join(self.output_dir, "_slides.mp4")
+        self._make_slide_video(slide_paths, slide_durations, slide_video)
+
+        cmd = [
+            self.ffmpeg, "-y",
+            "-i", slide_video,
+            "-i", audio_path,
+        ]
+
+        if srt_path and os.path.exists(srt_path):
+            srt_rel = os.path.relpath(srt_path).replace("\\", "/")
+            subtitle_style = "FontName=Microsoft YaHei,FontSize=14,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,MarginV=50"
+            cmd += [
+                "-vf", f"subtitles='{srt_rel}':force_style='{subtitle_style}'",
+            ]
+
+        cmd += [
+            "-map", "0:v",
+            "-map", "1:a",
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-pix_fmt", "yuv420p",
+            "-t", str(total_duration),
+            output_path,
+        ]
+
+        self._run_ffmpeg(cmd, "合成视频（无数字人）")
+        print(f"  视频已生成: {output_path}")
+
+        if os.path.exists(slide_video):
+            os.remove(slide_video)
+
+        return output_path
+
+
 if __name__ == "__main__":
     print("composer.py 需要通过 main.py 调用")

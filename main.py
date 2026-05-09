@@ -104,6 +104,7 @@ def main():
     parser.add_argument("--output", type=str, default="output/video/output.mp4", help="输出视频路径")
     parser.add_argument("--voice", type=str, help="TTS 音色（如 zh-CN-XiaoxiaoNeural）")
     parser.add_argument("--rate", type=str, help="TTS 语速（如 +10%%, -10%%）")
+    parser.add_argument("--no-avatar", action="store_true", help="跳过数字人渲染（无需 Blender）")
     parser.add_argument("--config", type=str, default="config.yaml", help="配置文件路径")
     args = parser.parse_args()
 
@@ -190,34 +191,39 @@ def main():
     print(f"每页时长: {[f'{d:.1f}s' for d in slide_durations]}")
 
     # -------------------------------------------------------
-    # 4. 渲染数字人动画
+    # 4. 渲染数字人动画（可跳过）
     # -------------------------------------------------------
-    print("\n" + "=" * 50)
-    print("【第 3 步】渲染数字人动画")
-    print("=" * 50)
-
-    renderer = Renderer(args.config)
     avatar_dir = config.get("render", {}).get("output_dir", "output/avatar")
 
-    # 清理旧帧文件
-    if os.path.exists(avatar_dir):
-        for f in os.listdir(avatar_dir):
-            if f.startswith("frame_") and f.endswith(".png"):
-                os.remove(os.path.join(avatar_dir, f))
+    if not args.no_avatar:
+        print("\n" + "=" * 50)
+        print("【第 3 步】渲染数字人动画")
+        print("=" * 50)
 
-    total_frames = int(total_audio_duration * config.get("render", {}).get("fps", 30))
-    print(f"  渲染 {total_frames} 帧 ({total_audio_duration:.1f}s)，请耐心等待...")
-    render_start = time.time()
+        renderer = Renderer(args.config)
 
-    renderer.render_animation(
-        fbx_path=args.model,
-        duration_s=total_audio_duration,
-        anim_path=args.anim,
-        output_dir=avatar_dir,
-    )
+        if os.path.exists(avatar_dir):
+            for f in os.listdir(avatar_dir):
+                if f.startswith("frame_") and f.endswith(".png"):
+                    os.remove(os.path.join(avatar_dir, f))
 
-    render_elapsed = time.time() - render_start
-    print(f"  渲染用时: {render_elapsed:.1f}s ({total_frames / max(render_elapsed, 0.1):.1f} fps)")
+        total_frames = int(total_audio_duration * config.get("render", {}).get("fps", 30))
+        print(f"  渲染 {total_frames} 帧 ({total_audio_duration:.1f}s)，请耐心等待...")
+        render_start = time.time()
+
+        renderer.render_animation(
+            fbx_path=args.model,
+            duration_s=total_audio_duration,
+            anim_path=args.anim,
+            output_dir=avatar_dir,
+        )
+
+        render_elapsed = time.time() - render_start
+        print(f"  渲染用时: {render_elapsed:.1f}s ({total_frames / max(render_elapsed, 0.1):.1f} fps)")
+    else:
+        print("\n" + "=" * 50)
+        print("【第 3 步】跳过数字人渲染（--no-avatar 模式）")
+        print("=" * 50)
 
     # -------------------------------------------------------
     # 5. 生成字幕
@@ -232,14 +238,23 @@ def main():
     print("【第 4 步】视频合成")
     print("=" * 50)
 
-    output_path = composer.compose(
-        slide_paths=slide_paths,
-        slide_durations=slide_durations,
-        avatar_frame_dir=avatar_dir,
-        audio_path=full_audio,
-        output_path=args.output,
-        srt_path=srt_path,
-    )
+    if args.no_avatar:
+        output_path = composer.compose_slides_only(
+            slide_paths=slide_paths,
+            slide_durations=slide_durations,
+            audio_path=full_audio,
+            output_path=args.output,
+            srt_path=srt_path,
+        )
+    else:
+        output_path = composer.compose(
+            slide_paths=slide_paths,
+            slide_durations=slide_durations,
+            avatar_frame_dir=avatar_dir,
+            audio_path=full_audio,
+            output_path=args.output,
+            srt_path=srt_path,
+        )
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 50)
