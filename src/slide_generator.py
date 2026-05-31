@@ -4,10 +4,12 @@
 输入讲解文本 → DeepSeek 提取结构化大纲 → Pillow 合成幻灯片图片
 """
 
+import hashlib
 import json
 import os
 import textwrap
 
+import requests
 import yaml
 from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
@@ -39,11 +41,13 @@ OUTLINE_PROMPT = """你是一个短视频口播文案专家。请将以下素材
 {
   "slides": [
     {"type": "cover", "title": "主标题", "subtitle": "副标题", "narration": "大家好，我是斯沃特。[一句话钩子]"},
-    {"type": "content", "title": "页面标题", "points": ["要点1", "要点2", "要点3"], "narration": "[40-80字精简口播]"},
+    {"type": "content", "title": "页面标题", "points": ["要点1", "要点2", "要点3"], "image_keyword": "英文图片搜索关键词", "narration": "[40-80字精简口播]"},
     {"type": "section", "title": "章节标题"},
     {"type": "ending", "title": "谢谢观看", "narration": "好了今天就聊到这里，我是斯沃特，我们下期见！"}
   ]
 }
+
+注意：image_keyword 是用于搜索配图的英文关键词（1-3个词），要具体且有视觉表现力，例如"artificial intelligence brain"、"stock market chart"、"robot arm factory"。
 
 素材原文：
 """
@@ -65,6 +69,11 @@ class SlideGenerator:
         self.height = sl_cfg.get("height", 1080)
         self.font_path = sl_cfg.get("font_path", "C:/Windows/Fonts/msyh.ttc")
         self.font_index = sl_cfg.get("font_index", 0)
+
+        pexels_cfg = self.config.get("pexels", {})
+        self.pexels_api_key = pexels_cfg.get("api_key", "")
+        self.image_cache_dir = pexels_cfg.get("cache_dir", "asset/images")
+        os.makedirs(self.image_cache_dir, exist_ok=True)
 
         self._load_fonts()
 
@@ -115,6 +124,54 @@ class SlideGenerator:
         bg = Image.open(self._bg_path(slide_type)).convert("RGBA")
         return bg.resize((self.width, self.height), Image.LANCZOS)
 
+    def search_image(self, keyword: str) -> str | None:
+        """通过 Pexels API 搜索图片，下载并缓存到本地。返回本地路径或 None。"""
+        if not self.pexels_api_key or not keyword:
+            return None
+
+        cache_name = hashlib.md5(keyword.encode()).hexdigest() + ".jpg"
+        cache_path = os.path.join(self.image_cache_dir, cache_name)
+        if os.path.exists(cache_path):
+            return cache_path
+
+        try:
+            resp = requests.get(
+                "https://api.pexels.com/v1/search",
+                headers={"Authorization": self.pexels_api_key},
+                params={"query": keyword, "per_page": 1, "orientation": "landscape"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            photos = data.get("photos", [])
+            if not photos:
+                return None
+
+            img_url = photos[0]["src"]["large"]
+            img_resp = requests.get(img_url, timeout=30)
+            img_resp.raise_for_status()
+            with open(cache_path, "wb") as f:
+                f.write(img_resp.content)
+            return cache_path
+        except Exception as e:
+            print(f"  [图片搜索失败] {keyword}: {e}")
+            return None
+
+    def download_images(self, slides_data: list[dict]) -> dict[int, str]:
+        """批量为 slides 下载配图，返回 {slide_index: local_path}。"""
+        result = {}
+        for i, sd in enumerate(slides_data):
+            keyword = sd.get("image_keyword", "")
+            if sd.get("type") == "content" and keyword:
+                print(f"  [{i + 1}/{len(slides_data)}] 搜索配图: {keyword}")
+                path = self.search_image(keyword)
+                if path:
+                    result[i] = path
+                    print(f"    → {path}")
+                else:
+                    print(f"    → 未找到")
+        return result
+
     @staticmethod
     def _center_x(draw: ImageDraw.Draw, text: str, font: ImageFont.FreeTypeFont, canvas_width: int) -> int:
         bbox = draw.textbbox((0, 0), text, font=font)
@@ -149,7 +206,7 @@ class SlideGenerator:
             "ending": self._render_ending,
         }.get(slide_type, self._render_content)
 
-        render_fn(draw, slide_data)
+        render_fn(draw, slide_data, bg)
 
         if slide_type in ("content", "section"):
             page_text = f"{index} / {total}"
@@ -179,7 +236,7 @@ class SlideGenerator:
         draw.text((sx, sy), text, fill=shadow_color, font=font)
         draw.text(xy, text, fill=fill, font=font)
 
-    def _render_cover(self, draw: ImageDraw.Draw, data: dict):
+    def _render_cover(self, draw: ImageDraw.Draw, data: dict, bg: Image.Image):
         title = data.get("title", "")
         subtitle = data.get("subtitle", "")
 
@@ -192,26 +249,63 @@ class SlideGenerator:
             x = self._center_x(draw, subtitle, self.font_cover_subtitle, self.width)
             self._draw_text_shadow(draw, (x, y), subtitle, self.font_cover_subtitle, "#EEEEEE")
 
-    def _render_section(self, draw: ImageDraw.Draw, data: dict):
+    def _render_section(self, draw: ImageDraw.Draw, data: dict, bg: Image.Image):
         title = data.get("title", "")
         y = int(self.height * 0.38)
         x = self._center_x(draw, title, self.font_cover_title, self.width)
         self._draw_text_shadow(draw, (x, y), title, self.font_cover_title, "white")
 
-    def _render_content(self, draw: ImageDraw.Draw, data: dict):
+    def _render_content(self, draw: ImageDraw.Draw, data: dict, bg: Image.Image):
         title = data.get("title", "")
         points = data.get("points", [])
+        image_path = data.get("image_path")
 
         x_margin = 110
-        max_text_width = self.width - x_margin * 2 - 40
-
-        # 安全区域：避开顶部金色线（~8%）和底部金色条（~82%）
         safe_top = int(self.height * 0.06)
         safe_bottom = int(self.height * 0.94)
 
-        # 标题
+        # 有配图时：左侧文字占 55%，右侧配图占 40%（留 5% 间距）
+        if image_path and os.path.exists(image_path):
+            text_right_edge = int(self.width * 0.55)
+            max_text_width = text_right_edge - x_margin - 20
+
+            img_area_left = int(self.width * 0.58)
+            img_area_right = self.width - x_margin
+            img_area_top = safe_top + 120
+            img_area_bottom = safe_bottom - 20
+            img_area_w = img_area_right - img_area_left
+            img_area_h = img_area_bottom - img_area_top
+
+            try:
+                photo = Image.open(image_path).convert("RGBA")
+                pw, ph = photo.size
+                scale = min(img_area_w / pw, img_area_h / ph)
+                new_w = int(pw * scale)
+                new_h = int(ph * scale)
+                photo = photo.resize((new_w, new_h), Image.LANCZOS)
+
+                img_x = img_area_left + (img_area_w - new_w) // 2
+                img_y = img_area_top + (img_area_h - new_h) // 2
+
+                corner_radius = 16
+                mask = Image.new("L", (new_w, new_h), 0)
+                mask_draw = ImageDraw.Draw(mask)
+                mask_draw.rounded_rectangle(
+                    [(0, 0), (new_w, new_h)], radius=corner_radius, fill=255
+                )
+
+                bg.paste(photo, (img_x, img_y), mask)
+                draw = ImageDraw.Draw(bg)
+            except Exception as e:
+                print(f"  [配图渲染失败] {e}")
+                max_text_width = self.width - x_margin * 2 - 40
+        else:
+            max_text_width = self.width - x_margin * 2 - 40
+
+        # 标题（全宽）
+        title_max_w = self.width - x_margin * 2 - 40
         y_title = safe_top
-        title_lines = self._wrap_text(title, self.font_title, max_text_width)
+        title_lines = self._wrap_text(title, self.font_title, title_max_w)
         for line in title_lines:
             self._draw_text_shadow(
                 draw, (x_margin, y_title), line, self.font_title,
@@ -219,14 +313,13 @@ class SlideGenerator:
             )
             y_title += 105
 
-        # 要点列表：根据数量动态计算行间距，确保不超出安全区域
+        # 要点列表
         y_start = y_title + 67
         available_height = safe_bottom - y_start
         total_lines = sum(
             len(self._wrap_text(p, self.font_point, max_text_width - 60))
             for p in points
         )
-        # 加上每个 point 之间的间隔
         total_units = total_lines + len(points) * 0.35
         line_height = min(85, int(available_height / max(total_units, 1)))
 
@@ -246,7 +339,7 @@ class SlideGenerator:
                 y += line_height
             y += int(line_height * 0.35)
 
-    def _render_ending(self, draw: ImageDraw.Draw, data: dict):
+    def _render_ending(self, draw: ImageDraw.Draw, data: dict, bg: Image.Image):
         title = data.get("title", "谢谢观看")
         y = int(self.height * 0.48)
         x = self._center_x(draw, title, self.font_cover_title, self.width)
@@ -269,6 +362,12 @@ class SlideGenerator:
         print("正在调用 DeepSeek 提取大纲...")
         slides_data = self.extract_outline(text)
         print(f"大纲提取完成，共 {len(slides_data)} 页")
+
+        print("搜索配图...")
+        image_map = self.download_images(slides_data)
+        for idx, path in image_map.items():
+            slides_data[idx]["image_path"] = path
+        print(f"配图下载完成，共 {len(image_map)} 张")
 
         print("开始渲染幻灯片...")
         slide_paths = []

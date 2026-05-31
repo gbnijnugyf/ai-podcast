@@ -15,6 +15,12 @@
 
   # 附带 TTS 参数
   python generate_video_from_report.py --date 2026-03-26 --voice zh-CN-XiaoxiaoNeural --rate "+10%"
+
+  # 跳过数字人渲染（无需 Blender，仅生成 PPT+语音视频）
+  python generate_video_from_report.py --generate --no-avatar
+
+  # 指定输出路径
+  python generate_video_from_report.py --generate --output output/video/daily.mp4
 """
 
 import argparse

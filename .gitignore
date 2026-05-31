@@ -2,3 +2,5 @@ config.yaml
 output/
 data/
 __pycache__/
+
+asset/images/
