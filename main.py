@@ -6,6 +6,7 @@
   python main.py --text "讲解文本内容"     # 指定文本
   python main.py --text-file input.txt    # 从文件读取文本
   python main.py --slides-dir asset/slides/  # 使用已有幻灯片图片
+  python main.py --slides-dir output/slides  # 使用已有幻灯片图片
 """
 
 import argparse
@@ -157,7 +158,13 @@ def main():
             for f in os.listdir(args.slides_dir)
             if f.lower().endswith((".png", ".jpg", ".jpeg"))
         ])
-        slides_data = [{"type": "content", "narration": text}]
+        outline_path = os.path.join(args.slides_dir, "outline.json")
+        if os.path.exists(outline_path):
+            with open(outline_path, "r", encoding="utf-8") as f:
+                slides_data = json.load(f)["slides"]
+            print(f"从 {outline_path} 加载大纲，共 {len(slides_data)} 页")
+        else:
+            slides_data = [{"type": "content", "narration": text}]
         print(f"使用已有幻灯片: {len(slide_paths)} 页")
     else:
         generator = SlideGenerator(args.config)

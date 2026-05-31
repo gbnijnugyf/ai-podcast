@@ -21,11 +21,12 @@ OUTLINE_PROMPT = """你是一个短视频口播文案专家。请将以下素材
 1. 每页对应一个主题/知识点
 2. 每页包含：标题（简短，不超过15字）、要点（3-5条，每条15-30字，内容详实具体）
 3. 要点需要包含具体的关键信息，不要过度简化
-4. 第一页为封面页（type=cover），narration 以"三分钟看完一天热点。"开头，然后用一句话抛出今天最劲爆的看点，制造悬念
+4. 第一页为封面页（type=cover），narration 以"两分钟看完一天热点。"开头，然后用一句话抛出今天最劲爆的看点，制造悬念
 5. 最后一页为结尾页（type=ending），narration 为结束语，如"好了，今天就聊到这里，我们下期见！"
 6. 中间如果有大的主题切换，插入章节分隔页（type=section，只有章节标题）
 7. 正文内容页 type=content
 8. **narration 字段是口播旁白脚本，是整个视频的灵魂**，必须满足：
+   - **纯文本**：不要出现emoji、特殊符号、HTML标签等非文本内容
    - **精简**：每页只讲 1-2 个最核心的爆点，不要面面俱到
    - **钩子感**：每页开头要有钩子，用反问、惊叹、反转来抓住注意力。如"这什么概念？""离谱的是...""但更炸裂的来了..."
    - **口语化**：像一个顶级财经 UP 主在跟朋友聊八卦，而不是播新闻
@@ -72,9 +73,9 @@ class SlideGenerator:
         idx = self.font_index
         self.font_cover_title = ImageFont.truetype(self.font_path, 96, index=idx)
         self.font_cover_subtitle = ImageFont.truetype(self.font_path, 44, index=idx)
-        self.font_title = ImageFont.truetype(self.font_path, 56, index=idx)
-        self.font_point = ImageFont.truetype(self.font_path, 34, index=idx)
-        self.font_page = ImageFont.truetype(self.font_path, 22, index=idx)
+        self.font_title = ImageFont.truetype(self.font_path, 84, index=idx)
+        self.font_point = ImageFont.truetype(self.font_path, 51, index=idx)
+        self.font_page = ImageFont.truetype(self.font_path, 33, index=idx)
 
     # ------------------------------------------------------------------
     # DeepSeek 大纲提取
@@ -216,10 +217,10 @@ class SlideGenerator:
                 draw, (x_margin, y_title), line, self.font_title,
                 fill="white", shadow_color="#00000066", offset=2,
             )
-            y_title += 70
+            y_title += 105
 
         # 要点列表：根据数量动态计算行间距，确保不超出安全区域
-        y_start = y_title + 45
+        y_start = y_title + 67
         available_height = safe_bottom - y_start
         total_lines = sum(
             len(self._wrap_text(p, self.font_point, max_text_width - 60))
@@ -227,7 +228,7 @@ class SlideGenerator:
         )
         # 加上每个 point 之间的间隔
         total_units = total_lines + len(points) * 0.35
-        line_height = min(68, int(available_height / max(total_units, 1)))
+        line_height = min(85, int(available_height / max(total_units, 1)))
 
         y = y_start
         for point in points:
