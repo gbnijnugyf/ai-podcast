@@ -65,8 +65,18 @@ def _format_srt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def generate_srt(slides_data: list[dict], slide_durations: list[float], output_path: str) -> str:
-    """根据 slides_data 和每页时长生成 SRT 字幕文件。"""
+def generate_srt(
+    slides_data: list[dict],
+    slide_durations: list[float],
+    output_path: str,
+    all_timestamps: list[list[dict]] | None = None,
+    audio_paths: list[str] | None = None,
+) -> str:
+    """根据 TTS 真实时间戳生成 SRT 字幕文件。
+
+    time_offset 用每页音频文件的实际时长（ffprobe）累加，
+    页内用 SentenceBoundary 时间戳做相对定位，确保无累积误差。
+    """
     entries = []
     idx = 1
     time_offset = 0.0
@@ -75,17 +85,47 @@ def generate_srt(slides_data: list[dict], slide_durations: list[float], output_p
         narration = sd.get("narration", "").strip()
         dur = slide_durations[i] if i < len(slide_durations) else 3.0
 
-        if narration:
-            chunks = _split_narration(narration)
-            chunk_dur = dur / max(len(chunks), 1)
+        if not narration:
+            continue
 
+        # 用实际音频文件时长计算偏移，避免累积误差
+        actual_audio_dur = None
+        if audio_paths and i < len(audio_paths) and audio_paths[i]:
+            try:
+                actual_audio_dur = subprocess_get_duration(audio_paths[i])
+            except Exception:
+                pass
+
+        ts_list = all_timestamps[i] if all_timestamps and i < len(all_timestamps) else []
+        sentence_ts = [t for t in ts_list if t["type"] == "SentenceBoundary"]
+
+        if sentence_ts:
+            for st in sentence_ts:
+                s_start = time_offset + st["offset_ms"] / 1000.0
+                s_text = st["text"]
+                s_dur = st["duration_ms"] / 1000.0
+
+                chunks = _split_narration(s_text)
+                s_total_chars = sum(len(c) for c in chunks)
+
+                for j, chunk in enumerate(chunks):
+                    c_char_offset = sum(len(chunks[k]) for k in range(j))
+                    c_start = s_start + s_dur * c_char_offset / max(s_total_chars, 1)
+                    c_end = s_start + s_dur * (c_char_offset + len(chunk)) / max(s_total_chars, 1) - 0.05
+                    entries.append(f"{idx}\n{_format_srt_time(c_start)} --> {_format_srt_time(c_end)}\n{chunk}\n")
+                    idx += 1
+        else:
+            chunks = _split_narration(narration)
+            total_chars = sum(len(c) for c in chunks)
+            fallback_dur = actual_audio_dur or dur
             for j, chunk in enumerate(chunks):
-                start = time_offset + j * chunk_dur
-                end = start + chunk_dur - 0.05
+                char_offset = sum(len(chunks[k]) for k in range(j))
+                start = time_offset + fallback_dur * char_offset / max(total_chars, 1)
+                end = time_offset + fallback_dur * (char_offset + len(chunk)) / max(total_chars, 1) - 0.05
                 entries.append(f"{idx}\n{_format_srt_time(start)} --> {_format_srt_time(end)}\n{chunk}\n")
                 idx += 1
 
-        time_offset += dur
+        time_offset += actual_audio_dur if actual_audio_dur else dur
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
@@ -236,7 +276,7 @@ def main():
     # 5. 生成字幕
     # -------------------------------------------------------
     srt_path = os.path.join(config.get("video", {}).get("output_dir", "output/video"), "subtitles.srt")
-    generate_srt(slides_data, slide_durations, srt_path)
+    generate_srt(slides_data, slide_durations, srt_path, all_timestamps, audio_paths)
 
     # -------------------------------------------------------
     # 6. 视频合成
