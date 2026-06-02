@@ -359,6 +359,10 @@ class SlideGenerator:
             self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
 
+        for f in os.listdir(self.output_dir):
+            if f.startswith("slide_") and f.endswith(".png"):
+                os.remove(os.path.join(self.output_dir, f))
+
         print("正在调用 DeepSeek 提取大纲...")
         slides_data = self.extract_outline(text)
         print(f"大纲提取完成，共 {len(slides_data)} 页")
