@@ -2,10 +2,12 @@
 幻灯片自动生成模块
 
 输入讲解文本 → DeepSeek 提取结构化大纲 → Pillow 合成幻灯片图片
+支持逐帧元素入场动画（标题滑入、要点逐行淡入、配图缩放等）
 """
 
 import hashlib
 import json
+import math
 import os
 import random
 import textwrap
@@ -156,6 +158,14 @@ class SlideGenerator:
         self.pexels_api_key = pexels_cfg.get("api_key", "")
         self.image_cache_dir = pexels_cfg.get("cache_dir", "asset/images")
         os.makedirs(self.image_cache_dir, exist_ok=True)
+
+        anim_cfg = self.config.get("animation", {})
+        self.element_animation = anim_cfg.get("element_animation", False)
+        self.intro_duration = anim_cfg.get("intro_duration", 0.8)
+        self.title_effect = anim_cfg.get("title_effect", "fade_down")
+        self.point_effect = anim_cfg.get("point_effect", "fade_left")
+        self.image_effect = anim_cfg.get("image_effect", "scale_up")
+        self.render_fps = self.config.get("render", {}).get("fps", 30)
 
         self._load_fonts()
 
@@ -318,7 +328,297 @@ class SlideGenerator:
         return output_path
 
     # ------------------------------------------------------------------
-    # 各类型页面渲染
+    # 逐帧元素入场动画
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ease_out_cubic(t: float) -> float:
+        """缓出曲线，让动画收尾更自然。"""
+        return 1.0 - (1.0 - min(max(t, 0.0), 1.0)) ** 3
+
+    def render_slide_frames(
+        self, slide_data: dict, index: int, total: int, output_dir: str,
+    ) -> list[str]:
+        """为单页生成入场动画帧序列 + 最终静态帧。
+
+        Returns:
+            帧文件路径列表（按时间顺序）
+        """
+        slide_type = slide_data["type"]
+        intro_frames = max(1, int(self.intro_duration * self.render_fps))
+
+        os.makedirs(output_dir, exist_ok=True)
+        frame_paths: list[str] = []
+
+        for fi in range(intro_frames):
+            progress = self._ease_out_cubic(fi / max(intro_frames - 1, 1))
+            img = self._render_animated_frame(slide_data, index, total, progress)
+            fp = os.path.join(output_dir, f"frame_{fi:04d}.png")
+            img.save(fp, "PNG")
+            frame_paths.append(fp)
+
+        return frame_paths
+
+    def _render_animated_frame(
+        self, slide_data: dict, index: int, total: int, progress: float,
+    ) -> Image.Image:
+        """渲染动画中间帧。progress: 0.0(开始) → 1.0(完成)。"""
+        slide_type = slide_data["type"]
+        bg = self._load_bg(slide_type)
+        draw = ImageDraw.Draw(bg)
+
+        render_fn = {
+            "cover": self._render_cover_animated,
+            "section": self._render_section_animated,
+            "content": self._render_content_animated,
+            "ending": self._render_ending_animated,
+        }.get(slide_type, self._render_content_animated)
+
+        render_fn(draw, slide_data, bg, progress)
+
+        if slide_type in ("content", "section"):
+            page_text = f"{index} / {total}"
+            alpha = min(max(progress * 2, 0.0), 1.0)
+            color = f"#{int(0x88 * alpha):02x}{int(0x88 * alpha):02x}{int(0x88 * alpha):02x}"
+            draw.text(
+                (self.width - 130, self.height - 55),
+                page_text,
+                fill=color,
+                font=self.font_page,
+            )
+
+        return bg
+
+    # --- 封面动画 ---
+
+    def _render_cover_animated(
+        self, draw: ImageDraw.Draw, data: dict, bg: Image.Image, progress: float,
+    ):
+        title = data.get("title", "")
+        subtitle = data.get("subtitle", "")
+
+        title_p = min(progress * 1.5, 1.0)
+        sub_p = max((progress - 0.3) / 0.7, 0.0)
+
+        y_base = int(self.height * 0.48)
+        x = self._center_x(draw, title, self.font_cover_title, self.width)
+
+        if self.title_effect == "fade_down":
+            offset_y = int((1.0 - title_p) * -60)
+            self._draw_text_alpha(draw, (x, y_base + offset_y), title,
+                                  self.font_cover_title, "white", title_p, bg)
+        else:
+            self._draw_text_alpha(draw, (x, y_base), title,
+                                  self.font_cover_title, "white", title_p, bg)
+
+        if subtitle:
+            y_sub = y_base + 120
+            x_sub = self._center_x(draw, subtitle, self.font_cover_subtitle, self.width)
+            self._draw_text_alpha(draw, (x_sub, y_sub), subtitle,
+                                  self.font_cover_subtitle, "#EEEEEE", sub_p, bg)
+
+    # --- 章节分隔动画 ---
+
+    def _render_section_animated(
+        self, draw: ImageDraw.Draw, data: dict, bg: Image.Image, progress: float,
+    ):
+        title = data.get("title", "")
+        y = int(self.height * 0.38)
+        x = self._center_x(draw, title, self.font_cover_title, self.width)
+
+        if self.title_effect == "fade_down":
+            offset_y = int((1.0 - progress) * -50)
+            self._draw_text_alpha(draw, (x, y + offset_y), title,
+                                  self.font_cover_title, "white", progress, bg)
+        else:
+            self._draw_text_alpha(draw, (x, y), title,
+                                  self.font_cover_title, "white", progress, bg)
+
+    # --- 内容页动画 ---
+
+    def _render_content_animated(
+        self, draw: ImageDraw.Draw, data: dict, bg: Image.Image, progress: float,
+    ):
+        title = data.get("title", "")
+        points = data.get("points", [])
+        image_path = data.get("image_path")
+
+        x_margin = 110
+        safe_top = int(self.height * 0.06)
+        safe_bottom = int(self.height * 0.94)
+
+        has_image = image_path and os.path.exists(image_path)
+        if has_image:
+            text_right_edge = int(self.width * 0.55)
+            max_text_width = text_right_edge - x_margin - 20
+        else:
+            max_text_width = self.width - x_margin * 2 - 40
+
+        # 标题（前 30% 动画时间完成）
+        title_p = min(progress / 0.3, 1.0)
+        title_max_w = self.width - x_margin * 2 - 40
+        y_title = safe_top
+        title_lines = self._wrap_text(title, self.font_title, title_max_w)
+        for line in title_lines:
+            if self.title_effect == "fade_down":
+                offset_y = int((1.0 - title_p) * -40)
+                self._draw_text_alpha(draw, (x_margin, y_title + offset_y), line,
+                                      self.font_title, "white", title_p, bg)
+            else:
+                self._draw_text_alpha(draw, (x_margin, y_title), line,
+                                      self.font_title, "white", title_p, bg)
+            y_title += 105
+
+        # 要点（30% ~ 90% 动画时间，逐行出现）
+        y_start = y_title + 67
+        available_height = safe_bottom - y_start
+        total_lines = sum(
+            len(self._wrap_text(p, self.font_point, max_text_width - 60))
+            for p in points
+        )
+        total_units = total_lines + len(points) * 0.35
+        line_height = min(85, int(available_height / max(total_units, 1)))
+
+        y = y_start
+        point_start = 0.3
+        point_end = 0.9
+        point_range = point_end - point_start
+
+        for pi, point in enumerate(points):
+            if y > safe_bottom:
+                break
+            item_progress_start = point_start + point_range * pi / max(len(points), 1)
+            item_progress = max((progress - item_progress_start) / (point_range / max(len(points), 1)), 0.0)
+            item_progress = min(item_progress, 1.0)
+
+            wrapped = self._wrap_text(point, self.font_point, max_text_width - 60)
+            for j, wline in enumerate(wrapped):
+                if y > safe_bottom:
+                    break
+                prefix = "●   " if j == 0 else "      "
+                text = prefix + wline
+
+                if self.point_effect == "fade_left":
+                    offset_x = int((1.0 - item_progress) * -50)
+                    self._draw_text_alpha(draw, (x_margin + 30 + offset_x, y), text,
+                                          self.font_point, "#FFFFFF", item_progress, bg)
+                else:
+                    self._draw_text_alpha(draw, (x_margin + 30, y), text,
+                                          self.font_point, "#FFFFFF", item_progress, bg)
+                y += line_height
+            y += int(line_height * 0.35)
+
+        # 配图（50% ~ 100%）
+        if has_image:
+            img_p = max((progress - 0.5) / 0.5, 0.0)
+            img_p = min(img_p, 1.0)
+            self._draw_image_animated(bg, image_path, x_margin, safe_top, safe_bottom, img_p)
+
+    def _draw_image_animated(
+        self, bg: Image.Image, image_path: str,
+        x_margin: int, safe_top: int, safe_bottom: int, progress: float,
+    ):
+        """绘制带动画的配图。"""
+        img_area_left = int(self.width * 0.58)
+        img_area_right = self.width - x_margin
+        img_area_top = safe_top + 120
+        img_area_bottom = safe_bottom - 20
+        img_area_w = img_area_right - img_area_left
+        img_area_h = img_area_bottom - img_area_top
+
+        try:
+            photo = Image.open(image_path).convert("RGBA")
+            pw, ph = photo.size
+            scale = min(img_area_w / pw, img_area_h / ph)
+
+            if self.image_effect == "scale_up":
+                anim_scale = 0.7 + 0.3 * progress
+                scale *= anim_scale
+
+            new_w = int(pw * scale)
+            new_h = int(ph * scale)
+            if new_w <= 0 or new_h <= 0:
+                return
+            photo = photo.resize((new_w, new_h), Image.LANCZOS)
+
+            img_x = img_area_left + (img_area_w - new_w) // 2
+            img_y = img_area_top + (img_area_h - new_h) // 2
+
+            corner_radius = 16
+            mask = Image.new("L", (new_w, new_h), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.rounded_rectangle(
+                [(0, 0), (new_w, new_h)], radius=corner_radius, fill=255
+            )
+
+            from PIL import ImageChops
+            alpha_val = int(255 * progress)
+            alpha_mask = Image.new("L", (new_w, new_h), alpha_val)
+            final_mask = ImageChops.darker(mask, alpha_mask)
+
+            bg.paste(photo, (img_x, img_y), final_mask)
+        except Exception as e:
+            print(f"  [配图动画渲染失败] {e}")
+
+    # --- 结尾页动画 ---
+
+    def _render_ending_animated(
+        self, draw: ImageDraw.Draw, data: dict, bg: Image.Image, progress: float,
+    ):
+        title = data.get("title", "谢谢观看")
+        y = int(self.height * 0.48)
+        x = self._center_x(draw, title, self.font_cover_title, self.width)
+        self._draw_text_alpha(draw, (x, y), title,
+                              self.font_cover_title, "white", progress, bg)
+
+    # --- 工具：带透明度的文字绘制 ---
+
+    def _draw_text_alpha(
+        self, draw: ImageDraw.Draw, xy: tuple, text: str,
+        font: ImageFont.FreeTypeFont, fill: str, alpha: float,
+        bg: Image.Image,
+    ):
+        """在 RGBA 背景上绘制带透明度的文字（含阴影）。"""
+        if alpha <= 0.01:
+            return
+
+        bbox = font.getbbox(text)
+        shadow_dx, shadow_dy = 3, 2
+        pad = 10
+
+        # 层尺寸：文字 ink 区域 + 阴影偏移 + 四周留白
+        layer_w = bbox[2] - bbox[0] + shadow_dx + pad * 2
+        layer_h = bbox[3] - bbox[1] + shadow_dy + pad * 2
+        layer = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
+        layer_draw = ImageDraw.Draw(layer)
+
+        # 让文字 ink 起始于 (pad, pad)，需要将绘制原点偏移 bbox 的 left/top
+        ox = pad - bbox[0]
+        oy = pad - bbox[1]
+
+        shadow_a = int(0x55 * alpha)
+        layer_draw.text((ox + shadow_dx, oy + shadow_dy), text,
+                        fill=(0, 0, 0, shadow_a), font=font)
+
+        if fill.startswith("#"):
+            fill_hex = fill.lstrip("#")
+            if len(fill_hex) == 6:
+                r, g, b = int(fill_hex[0:2], 16), int(fill_hex[2:4], 16), int(fill_hex[4:6], 16)
+            else:
+                r, g, b = 255, 255, 255
+        elif fill.lower() == "white":
+            r, g, b = 255, 255, 255
+        else:
+            r, g, b = 255, 255, 255
+
+        text_a = int(255 * alpha)
+        layer_draw.text((ox, oy), text, fill=(r, g, b, text_a), font=font)
+
+        # 粘贴到背景时偏移，使最终文字位置与 draw.text(xy) 一致
+        bg.paste(layer, (xy[0] - pad + bbox[0], xy[1] - pad + bbox[1]), layer)
+
+    # ------------------------------------------------------------------
+    # 各类型页面渲染（静态，无动画）
     # ------------------------------------------------------------------
 
     def _draw_text_shadow(
@@ -444,11 +744,13 @@ class SlideGenerator:
     # 完整流程
     # ------------------------------------------------------------------
 
-    def generate(self, text: str, output_dir: str | None = None) -> tuple[list[dict], list[str]]:
+    def generate(self, text: str, output_dir: str | None = None) -> tuple[list[dict], list[str], list[list[str]] | None]:
         """完整流程：文本 → 大纲 → 幻灯片图片序列。
 
         Returns:
-            (slides_data, slide_paths) — 大纲数据列表 和 生成的图片路径列表
+            (slides_data, slide_paths, frame_dirs) —
+              大纲数据列表、生成的静态图片路径列表、
+              入场动画帧序列目录列表（未启用动画时为 None）
         """
         if output_dir:
             self.output_dir = output_dir
@@ -470,17 +772,25 @@ class SlideGenerator:
 
         print("开始渲染幻灯片...")
         slide_paths = []
+        all_frame_dirs: list[list[str]] | None = [] if self.element_animation else None
+
         for i, sd in enumerate(slides_data):
             path = self.render_slide(sd, i + 1, len(slides_data))
             slide_paths.append(path)
             print(f"  [{i + 1}/{len(slides_data)}] {sd['type']}: {path}")
+
+            if self.element_animation:
+                frames_dir = os.path.join(self.output_dir, f"anim_{i:03d}")
+                frame_paths = self.render_slide_frames(sd, i + 1, len(slides_data), frames_dir)
+                all_frame_dirs.append(frame_paths)
+                print(f"    → 动画帧: {len(frame_paths)} 帧")
 
         outline_path = os.path.join(self.output_dir, "outline.json")
         with open(outline_path, "w", encoding="utf-8") as f:
             json.dump({"slides": slides_data}, f, ensure_ascii=False, indent=2)
         print(f"大纲已保存: {outline_path}")
 
-        return slides_data, slide_paths
+        return slides_data, slide_paths, all_frame_dirs
 
 
 # ------------------------------------------------------------------
@@ -501,5 +811,8 @@ if __name__ == "__main__":
     )
 
     generator = SlideGenerator()
-    slides_data, slide_paths = generator.generate(sample_text)
+    slides_data, slide_paths, all_frame_dirs = generator.generate(sample_text)
     print(f"\n完成！共生成 {len(slide_paths)} 张幻灯片")
+    if all_frame_dirs:
+        total_frames = sum(len(fd) for fd in all_frame_dirs)
+        print(f"动画帧总数: {total_frames}")

@@ -19,6 +19,9 @@
   # 跳过数字人渲染（无需 Blender，仅生成 PPT+语音视频）
   python generate_video_from_report.py --generate --no-avatar
 
+  # 使用已有幻灯片图片
+  python main.py --slides-dir output/slides --no-avatar
+
   # 指定输出路径
   python generate_video_from_report.py --generate --output output/video/daily.mp4
 """

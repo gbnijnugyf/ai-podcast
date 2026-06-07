@@ -192,6 +192,8 @@ def main():
 
     slides_output_dir = config["slides"]["output_dir"]
 
+    all_frame_dirs = None
+
     if args.slides_dir:
         slide_paths = sorted([
             os.path.join(args.slides_dir, f)
@@ -208,7 +210,7 @@ def main():
         print(f"使用已有幻灯片: {len(slide_paths)} 页")
     else:
         generator = SlideGenerator(args.config)
-        slides_data, slide_paths = generator.generate(text, slides_output_dir)
+        slides_data, slide_paths, all_frame_dirs = generator.generate(text, slides_output_dir)
 
     # -------------------------------------------------------
     # 3. TTS 语音合成
@@ -292,6 +294,7 @@ def main():
             audio_path=full_audio,
             output_path=args.output,
             srt_path=srt_path,
+            all_frame_dirs=all_frame_dirs,
         )
     else:
         output_path = composer.compose(
@@ -301,6 +304,7 @@ def main():
             audio_path=full_audio,
             output_path=args.output,
             srt_path=srt_path,
+            all_frame_dirs=all_frame_dirs,
         )
 
     elapsed = time.time() - start_time

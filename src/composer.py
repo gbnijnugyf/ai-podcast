@@ -25,6 +25,12 @@ class VideoComposer:
         self.fps = self.config.get("render", {}).get("fps", 30)
         self.avatar_size = self.config.get("render", {}).get("avatar_size", 480)
 
+        anim_cfg = self.config.get("animation", {})
+        self.transition_type = anim_cfg.get("transition_type", "fade")
+        self.transition_duration = anim_cfg.get("transition_duration", 0.6)
+        self.element_animation = anim_cfg.get("element_animation", False)
+        self.intro_duration = anim_cfg.get("intro_duration", 0.8)
+
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _run_ffmpeg(self, cmd: list[str], desc: str = ""):
@@ -96,6 +102,7 @@ class VideoComposer:
         audio_path: str,
         output_path: str | None = None,
         srt_path: str | None = None,
+        all_frame_dirs: list[list[str]] | None = None,
     ) -> str:
         """合成最终视频。
 
@@ -106,6 +113,7 @@ class VideoComposer:
             audio_path: 音频文件路径
             output_path: 输出视频路径
             srt_path: SRT 字幕文件路径
+            all_frame_dirs: 每页的入场动画帧路径列表（可选）
         """
         if output_path is None:
             output_path = os.path.join(self.output_dir, "output.mp4")
@@ -114,7 +122,7 @@ class VideoComposer:
         print(f"  总时长: {total_duration:.1f}s, 幻灯片: {len(slide_paths)} 页")
 
         slide_video = os.path.join(self.output_dir, "_slides.mp4")
-        self._make_slide_video(slide_paths, slide_durations, slide_video)
+        self._make_slide_video(slide_paths, slide_durations, slide_video, all_frame_dirs)
 
         self._compose_final(slide_video, avatar_frame_dir, audio_path, output_path, total_duration, srt_path)
 
@@ -128,31 +136,207 @@ class VideoComposer:
         slide_paths: list[str],
         slide_durations: list[float],
         output_path: str,
+        all_frame_dirs: list[list[str]] | None = None,
     ):
-        """将幻灯片图片序列生成为视频（每页显示指定时长）。"""
-        # 使用 FFmpeg concat demuxer
-        list_file = os.path.join(self.output_dir, "_slide_list.txt")
+        """将幻灯片图片序列生成为视频，支持入场动画帧和页间转场。"""
+        if not slide_paths:
+            raise ValueError("没有幻灯片可以生成视频")
+
+        n = len(slide_paths)
+        use_xfade = self.transition_duration > 0 and n > 1
+        td = self.transition_duration if use_xfade else 0.0
+
+        # xfade 转场会让相邻页重叠 td 秒，总共减少 (n-1)*td 秒。
+        # 补偿策略：给除最后一页外的每页追加 td 秒静态停留时间。
+        compensated_durations = list(slide_durations)
+        if use_xfade:
+            for i in range(n - 1):
+                compensated_durations[i] += td
+
+        page_videos = []
+        temp_files = []
+
+        for i, (slide_path, dur) in enumerate(zip(slide_paths, compensated_durations)):
+            page_video = os.path.join(self.output_dir, f"_page_{i:03d}.mp4")
+            page_videos.append(page_video)
+            temp_files.append(page_video)
+
+            has_anim = (
+                all_frame_dirs is not None
+                and i < len(all_frame_dirs)
+                and all_frame_dirs[i]
+            )
+
+            if has_anim:
+                self._make_page_video_with_anim(
+                    all_frame_dirs[i], slide_path, dur, page_video,
+                )
+            else:
+                self._make_page_video_static(slide_path, dur, page_video)
+
+        if len(page_videos) == 1:
+            os.rename(page_videos[0], output_path)
+            return
+
+        if use_xfade:
+            self._concat_with_xfade(page_videos, compensated_durations, output_path)
+        else:
+            self._concat_simple(page_videos, output_path)
+
+        for f in temp_files:
+            if os.path.exists(f):
+                os.remove(f)
+
+    def _make_page_video_static(self, slide_path: str, duration: float, output_path: str):
+        """将单张静态图片生成为指定时长的视频片段。"""
+        self._run_ffmpeg([
+            self.ffmpeg, "-y",
+            "-loop", "1",
+            "-i", os.path.abspath(slide_path),
+            "-t", f"{duration:.3f}",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            "-r", str(self.fps),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            output_path,
+        ], f"静态页 → 视频")
+
+    def _make_page_video_with_anim(
+        self, frame_paths: list[str], static_slide: str,
+        total_duration: float, output_path: str,
+    ):
+        """将入场动画帧 + 静态停留帧合成为单页视频。"""
+        anim_dur = len(frame_paths) / self.fps
+        static_dur = max(total_duration - anim_dur, 0.1)
+
+        anim_video = os.path.join(self.output_dir, "_anim_temp.mp4")
+        static_video = os.path.join(self.output_dir, "_static_temp.mp4")
+
+        frames_dir = os.path.dirname(frame_paths[0])
+        pattern = os.path.join(os.path.abspath(frames_dir), "frame_%04d.png")
+
+        self._run_ffmpeg([
+            self.ffmpeg, "-y",
+            "-framerate", str(self.fps),
+            "-i", pattern,
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            "-r", str(self.fps),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            anim_video,
+        ], "动画帧 → 视频")
+
+        # 用动画最后一帧作为静态停留画面，避免与动画末尾的视觉跳变
+        last_frame = os.path.abspath(frame_paths[-1])
+
+        self._run_ffmpeg([
+            self.ffmpeg, "-y",
+            "-loop", "1",
+            "-i", last_frame,
+            "-t", f"{static_dur:.3f}",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            "-r", str(self.fps),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            static_video,
+        ], "静态停留 → 视频")
+
+        list_file = os.path.join(self.output_dir, "_page_concat.txt")
         with open(list_file, "w", encoding="utf-8") as f:
-            for path, dur in zip(slide_paths, slide_durations):
-                abs_path = os.path.abspath(path)
-                f.write(f"file '{abs_path}'\n")
-                f.write(f"duration {dur:.3f}\n")
-            # 最后一帧需要再写一次 file（FFmpeg concat 的要求）
-            if slide_paths:
-                f.write(f"file '{os.path.abspath(slide_paths[-1])}'\n")
+            f.write(f"file '{os.path.abspath(anim_video)}'\n")
+            f.write(f"file '{os.path.abspath(static_video)}'\n")
 
         self._run_ffmpeg([
             self.ffmpeg, "-y",
             "-f", "concat", "-safe", "0",
             "-i", list_file,
-            "-vf", f"scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
-            "-r", str(self.fps),
+            "-c", "copy",
+            output_path,
+        ], "拼接入场+停留")
+
+        for tmp in [anim_video, static_video, list_file]:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+    def _concat_with_xfade(
+        self, page_videos: list[str], slide_durations: list[float], output_path: str,
+    ):
+        """用 xfade 滤镜链拼接所有页面视频。"""
+        n = len(page_videos)
+        td = self.transition_duration
+
+        inputs = []
+        for pv in page_videos:
+            inputs += ["-i", os.path.abspath(pv)]
+
+        offsets = []
+        cumulative = 0.0
+        for i in range(n - 1):
+            page_dur = self._get_video_duration(page_videos[i])
+            offset = cumulative + page_dur - td
+            offsets.append(max(offset, cumulative + 0.1))
+            cumulative = offset
+
+        filter_parts = []
+        current_label = "[0:v]"
+
+        for i in range(n - 1):
+            next_label = f"[{i + 1}:v]"
+            out_label = f"[v{i}]" if i < n - 2 else "[vout]"
+            filter_parts.append(
+                f"{current_label}{next_label}xfade=transition={self.transition_type}"
+                f":duration={td}:offset={offsets[i]:.3f}{out_label}"
+            )
+            current_label = out_label
+
+        if not filter_parts:
+            filter_chain = "[0:v]copy[vout]"
+        else:
+            filter_chain = ";".join(filter_parts)
+
+        cmd = [self.ffmpeg, "-y"] + inputs + [
+            "-filter_complex", filter_chain,
+            "-map", "[vout]",
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
+            "-r", str(self.fps),
             output_path,
-        ], "生成幻灯片视频")
+        ]
+        self._run_ffmpeg(cmd, f"xfade 转场合成 ({n} 页)")
+
+    def _concat_simple(self, page_videos: list[str], output_path: str):
+        """无转场简单拼接。"""
+        list_file = os.path.join(self.output_dir, "_concat_list.txt")
+        with open(list_file, "w", encoding="utf-8") as f:
+            for pv in page_videos:
+                f.write(f"file '{os.path.abspath(pv)}'\n")
+
+        self._run_ffmpeg([
+            self.ffmpeg, "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", list_file,
+            "-c", "copy",
+            output_path,
+        ], "简单拼接视频")
 
         os.remove(list_file)
+
+    def _get_video_duration(self, video_path: str) -> float:
+        """获取视频时长。"""
+        result = subprocess.run(
+            [
+                self.ffprobe,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return float(result.stdout.strip())
 
     def _compose_final(
         self,
@@ -214,6 +398,7 @@ class VideoComposer:
         audio_path: str,
         output_path: str | None = None,
         srt_path: str | None = None,
+        all_frame_dirs: list[list[str]] | None = None,
     ) -> str:
         """合成视频（无数字人叠加）：幻灯片 + 音频 + 字幕。"""
         if output_path is None:
@@ -223,7 +408,7 @@ class VideoComposer:
         print(f"  总时长: {total_duration:.1f}s, 幻灯片: {len(slide_paths)} 页（无数字人模式）")
 
         slide_video = os.path.join(self.output_dir, "_slides.mp4")
-        self._make_slide_video(slide_paths, slide_durations, slide_video)
+        self._make_slide_video(slide_paths, slide_durations, slide_video, all_frame_dirs)
 
         cmd = [
             self.ffmpeg, "-y",
