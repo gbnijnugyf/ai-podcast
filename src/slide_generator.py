@@ -7,6 +7,7 @@
 import hashlib
 import json
 import os
+import random
 import textwrap
 
 import requests
@@ -15,7 +16,88 @@ from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 
 
-OUTLINE_PROMPT = """你是一个短视频口播文案专家。请将以下素材分页，提取每页标题、要点，并撰写高吸引力的口播旁白。
+STYLE_VARIANTS = [
+    {
+        "persona": "你是一个贴吧味十足的毒舌博主，说话阴阳怪气又一针见血，喜欢用反讽和夸张类比让复杂事情秒懂，带着老哥特有的【乐子人】气质。",
+        "openings": [
+            "每天两分钟，帮你了解一天大事。",
+            "又是被新闻信息洪流挤爆的一天，两分钟给你讲明白。",
+            "今天这消息，我看完直接坐不住了。",
+        ],
+        "endings": [
+            "每天两分钟，关注我，我们下期见！",
+            "关注我，培养一个每天了解时事热点的微习惯。",
+            "每天花两分钟跟我看看世界在发生什么，咱们下期不见不散。",
+        ],
+        "hooks": [
+            "这什么概念？", "离谱的是...", "但更炸裂的来了...",
+            "你敢信？", "关键来了...", "最骚的操作是...",
+        ],
+        "emotions": "卧槽、这也行？、赶紧告诉朋友",
+        "tone": "像一个贴吧老哥在跟你吐槽今天的离谱新闻，尖锐毒舌但有料有趣",
+    },
+    {
+        "persona": "你是一个知乎大V风格的知性主播，表达从容有深度，擅长把专业内容降维解释，让人听完有【涨知识了】的获得感，偶尔来一句冷幽默。",
+        "openings": [
+            "两分钟了解一天大事，今天信息量有点大，我帮你捋一捋。",
+            "今天有几条值得关注的消息，两分钟帮你抓住重点。",
+            "每天两分钟，不错过重要消息。先说一条让我眼前一亮的。",
+        ],
+        "endings": [
+            "每天两分钟，帮助你了解一天大事，我们下期再见。",
+            "关注我，养成每天快速了解时事的习惯，下期见。",
+            "今天先到这，后续的事看后续，我们下期见。",
+        ],
+        "hooks": [
+            "值得注意的是...", "换句话说...", "这意味着什么呢？",
+            "重点来了...", "有意思的是...", "但别急，还有后续...",
+        ],
+        "emotions": "涨知识了、原来如此、这个角度新颖",
+        "tone": "像一个靠谱的知乎答主在做深度解读，专业但不枯燥，让人有获得感",
+    },
+    {
+        "persona": "你是一个B站味的邻家UP主，说话轻松随意接地气，喜欢用弹幕梗和日常比喻，让人听着特别舒服，有种【和朋友开语音】的感觉。",
+        "openings": [
+            "来了来了，每天两分钟帮你了解今天发生了啥。",
+            "两分钟了解一天大事，今天这几条新闻挺有意思的。",
+            "兄弟们来了，每天两分钟跟你唠唠今天的大事。",
+        ],
+        "endings": [
+            "每天两分钟了解热点大事，觉得有用就关注一下，下期见！",
+            "关注我，每天花两分钟就能跟上世界的节奏，咱们下期见。",
+            "今天就聊到这，点个关注不迷路，我们下期接着唠。",
+        ],
+        "hooks": [
+            "你猜怎么着？", "好家伙...", "等等，还没完...",
+            "说出来你可能不信...", "但后面的事更绝...", "注意这个细节...",
+        ],
+        "emotions": "哈哈哈太真实了、长见识了、转给朋友看看",
+        "tone": "像一个B站UP主在跟粉丝闲聊趣事，没有距离感，弹幕味拉满",
+    },
+    {
+        "persona": "你是一个微博热搜味的资讯达人，擅长用脱口秀节奏包装信息，善于制造【热搜体】的戏剧感，让人又笑又涨知识。",
+        "openings": [
+            "各位，每天两分钟帮你看完今天大事件。",
+            "两分钟了解一天大事。",
+            "今日资讯，两分钟讲给你听。",
+        ],
+        "endings": [
+            "每天两分钟了解大事，关注我培养看新闻的好习惯，下期见！",
+            "关注我，每天两分钟帮你把握时事脉搏，咱们下期见。",
+            "干货都给了，关注我不错过下期精彩，我们下期见。",
+        ],
+        "hooks": [
+            "笑死，你听这个...", "精彩的来了...", "但反转来了...",
+            "你以为这就完了？", "请注意前方高能...", "绷不住了...",
+        ],
+        "emotions": "笑死了、这也太离谱了、必须分享给朋友",
+        "tone": "像一个脱口秀演员在讲今天的热搜，微博评论区味拉满，笑点密集但信息量足",
+    },
+]
+
+OUTLINE_PROMPT_TEMPLATE = """你是一个短视频口播文案专家。{persona}
+
+请将以下素材分页，提取每页标题、要点，并撰写高吸引力的口播旁白。
 
 核心原则：**少即是多**。不要复述所有信息，只挑最炸裂、最反直觉、最能吸引人的点来讲。
 
@@ -23,29 +105,29 @@ OUTLINE_PROMPT = """你是一个短视频口播文案专家。请将以下素材
 1. 每页对应一个主题/知识点
 2. 每页包含：标题（简短，不超过15字）、要点（3-5条，每条15-30字，内容详实具体）
 3. 要点需要包含具体的关键信息，不要过度简化
-4. 第一页为封面页（type=cover），narration 以"两分钟看完一天热点。"开头，然后用一句话抛出今天最劲爆的看点，制造悬念
-5. 最后一页为结尾页（type=ending），narration 为结束语，如"好了，今天就聊到这里，我们下期见！"
+4. 第一页为封面页（type=cover），narration 以"{opening}"开头，然后用一句话抛出今天最劲爆的看点，制造悬念
+5. 最后一页为结尾页（type=ending），narration 为结束语，如"{ending}"
 6. 中间如果有大的主题切换，插入章节分隔页（type=section，只有章节标题）
 7. 正文内容页 type=content
 8. **narration 字段是口播旁白脚本，是整个视频的灵魂**，必须满足：
    - **纯文本**：不要出现emoji、特殊符号、HTML标签等非文本内容
    - **精简**：每页只讲 1-2 个最核心的爆点，不要面面俱到
-   - **钩子感**：每页开头要有钩子，用反问、惊叹、反转来抓住注意力。如"这什么概念？""离谱的是...""但更炸裂的来了..."
-   - **口语化**：像一个顶级财经 UP 主在跟朋友聊八卦，而不是播新闻
-   - **制造情绪**：让听众觉得"卧槽"、"这也行？"、"赶紧告诉朋友"
-   - **留悬念**：部分页面结尾要埋钩子引导继续听，如"但更疯狂的还在后面"
+   - **钩子感**：每页开头要有钩子，用反问、惊叹、反转来抓住注意力。从以下话术中灵活选用或自由发挥：{hooks}
+   - **口语化**：{tone}
+   - **制造情绪**：让听众觉得"{emotions}"
+   - **留悬念**：部分页面结尾要埋钩子引导继续听
    - 必须保留关键数据，不能编造
    - **每页 narration 严格控制在 40-80 字**，宁短勿长
 
 请严格以如下JSON格式输出，不要输出其他内容：
-{
+{{
   "slides": [
-    {"type": "cover", "title": "主标题", "subtitle": "副标题", "narration": "大家好，我是斯沃特。[一句话钩子]"},
-    {"type": "content", "title": "页面标题", "points": ["要点1", "要点2", "要点3"], "image_keyword": "英文图片搜索关键词", "narration": "[40-80字精简口播]"},
-    {"type": "section", "title": "章节标题"},
-    {"type": "ending", "title": "谢谢观看", "narration": "好了今天就聊到这里，我是斯沃特，我们下期见！"}
+    {{"type": "cover", "title": "主标题", "subtitle": "副标题", "narration": "{opening}[一句话钩子]"}},
+    {{"type": "content", "title": "页面标题", "points": ["要点1", "要点2", "要点3"], "image_keyword": "英文图片搜索关键词", "narration": "[40-80字精简口播]"}},
+    {{"type": "section", "title": "章节标题"}},
+    {{"type": "ending", "title": "谢谢观看", "narration": "{ending}"}}
   ]
-}
+}}
 
 注意：image_keyword 是用于搜索配图的英文关键词（1-3个词），要具体且有视觉表现力，例如"artificial intelligence brain"、"stock market chart"、"robot arm factory"。
 
@@ -90,8 +172,21 @@ class SlideGenerator:
     # DeepSeek 大纲提取
     # ------------------------------------------------------------------
 
+    def _build_prompt(self) -> str:
+        """随机选取一套风格参数，填充到提示词模板中。"""
+        style = random.choice(STYLE_VARIANTS)
+        return OUTLINE_PROMPT_TEMPLATE.format(
+            persona=style["persona"],
+            opening=random.choice(style["openings"]),
+            ending=random.choice(style["endings"]),
+            hooks="、".join(f'"{h}"' for h in random.sample(style["hooks"], min(4, len(style["hooks"])))),
+            tone=style["tone"],
+            emotions=style["emotions"],
+        )
+
     def extract_outline(self, text: str) -> list[dict]:
         """调用 DeepSeek API，将讲解文本转换为结构化幻灯片大纲。"""
+        prompt = self._build_prompt()
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -99,9 +194,9 @@ class SlideGenerator:
                     "role": "system",
                     "content": "你是PPT大纲提取专家，只输出JSON。",
                 },
-                {"role": "user", "content": OUTLINE_PROMPT + text},
+                {"role": "user", "content": prompt + text},
             ],
-            temperature=0.3,
+            temperature=0.65,
             response_format={"type": "json_object"},
         )
         result = json.loads(response.choices[0].message.content)
