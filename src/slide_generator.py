@@ -3,6 +3,7 @@
 
 输入讲解文本 → DeepSeek 提取结构化大纲 → Pillow 合成幻灯片图片
 支持逐帧元素入场动画（标题滑入、要点逐行淡入、配图缩放等）
+支持随机渐变背景生成 + 半透明蒙版保障文字可读性
 """
 
 import hashlib
@@ -12,10 +13,59 @@ import os
 import random
 import textwrap
 
+import numpy as np
 import requests
 import yaml
 from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
+
+
+# ------------------------------------------------------------------
+# 预设渐变色板：每次生成锁定一组，不同页面类型在此基础上微调
+# 每组包含 (起始色, 结束色) 的 RGB 元组
+# ------------------------------------------------------------------
+COLOR_PALETTES = [
+    {
+        "name": "深海蓝紫",
+        "colors": [(15, 12, 41), (48, 43, 99), (36, 36, 62)],
+    },
+    {
+        "name": "暗夜森林",
+        "colors": [(15, 32, 39), (32, 58, 67), (44, 83, 100)],
+    },
+    {
+        "name": "科技蓝黑",
+        "colors": [(0, 4, 40), (0, 78, 146), (0, 26, 51)],
+    },
+    {
+        "name": "星空靛紫",
+        "colors": [(23, 11, 46), (58, 28, 113), (26, 5, 51)],
+    },
+    {
+        "name": "深邃墨绿",
+        "colors": [(5, 25, 20), (15, 60, 50), (8, 35, 30)],
+    },
+    {
+        "name": "暗红酒韵",
+        "colors": [(30, 5, 10), (80, 15, 25), (45, 8, 15)],
+    },
+    {
+        "name": "午夜靛蓝",
+        "colors": [(10, 15, 45), (25, 40, 90), (15, 20, 55)],
+    },
+    {
+        "name": "钴蓝深空",
+        "colors": [(5, 10, 35), (20, 50, 120), (10, 25, 60)],
+    },
+    {
+        "name": "暗岩灰紫",
+        "colors": [(25, 20, 35), (50, 40, 70), (35, 28, 48)],
+    },
+    {
+        "name": "熔岩暗橙",
+        "colors": [(25, 10, 0), (75, 30, 5), (40, 15, 2)],
+    },
+]
 
 
 STYLE_VARIANTS = [
@@ -147,12 +197,13 @@ class SlideGenerator:
         self.model = ds_cfg.get("model", "deepseek-chat")
 
         sl_cfg = self.config["slides"]
-        self.bg_dir = sl_cfg["bg_dir"]
+        self.bg_dir = sl_cfg.get("bg_dir", "asset/slide_bg")
         self.output_dir = sl_cfg["output_dir"]
         self.width = sl_cfg.get("width", 1920)
         self.height = sl_cfg.get("height", 1080)
         self.font_path = sl_cfg.get("font_path", "C:/Windows/Fonts/msyh.ttc")
         self.font_index = sl_cfg.get("font_index", 0)
+        self.bg_mode = sl_cfg.get("bg_mode", "gradient")  # "gradient" | "static"
 
         pexels_cfg = self.config.get("pexels", {})
         self.pexels_api_key = pexels_cfg.get("api_key", "")
@@ -168,6 +219,7 @@ class SlideGenerator:
         self.render_fps = self.config.get("render", {}).get("fps", 30)
 
         self._load_fonts()
+        self._init_palette()
 
     def _load_fonts(self):
         """预加载各级字体。"""
@@ -177,6 +229,166 @@ class SlideGenerator:
         self.font_title = ImageFont.truetype(self.font_path, 84, index=idx)
         self.font_point = ImageFont.truetype(self.font_path, 51, index=idx)
         self.font_page = ImageFont.truetype(self.font_path, 33, index=idx)
+
+    def _init_palette(self):
+        """每次运行时初始化背景策略：优先从 Pexels 搜索，降级使用渐变生成。"""
+        self._bg_image_path = None
+        self._current_palette = random.choice(COLOR_PALETTES)
+        self._gradient_angle = random.uniform(0, 360)
+
+        if self.bg_mode == "gradient":
+            bg_path = self._search_bg_from_pexels()
+            if bg_path:
+                self._bg_image_path = bg_path
+                print(f"[背景] 使用 Pexels 图片: {bg_path}")
+            else:
+                print(f"[背景] Pexels 搜索失败，降级使用渐变色板: {self._current_palette['name']}")
+        else:
+            print("[背景] 使用固定背景文件")
+
+    # ------------------------------------------------------------------
+    # Pexels 背景图片搜索
+    # ------------------------------------------------------------------
+
+    _BG_SEARCH_KEYWORDS = [
+        "dark abstract background",
+        "dark gradient texture",
+        "dark geometric pattern",
+        "dark bokeh background",
+        "dark blue abstract",
+        "dark purple abstract",
+        "dark technology background",
+        "dark nature landscape night",
+        "dark space nebula",
+        "dark underwater",
+        "dark forest moody",
+        "dark mountain silhouette",
+    ]
+
+    def _search_bg_from_pexels(self) -> str | None:
+        """从 Pexels 搜索深色背景图片，下载缓存后返回路径。"""
+        if not self.pexels_api_key:
+            return None
+
+        keyword = random.choice(self._BG_SEARCH_KEYWORDS)
+        cache_name = "bg_" + hashlib.md5(keyword.encode()).hexdigest() + ".jpg"
+        cache_path = os.path.join(self.image_cache_dir, cache_name)
+
+        if os.path.exists(cache_path):
+            return cache_path
+
+        try:
+            page = random.randint(1, 5)
+            resp = requests.get(
+                "https://api.pexels.com/v1/search",
+                headers={"Authorization": self.pexels_api_key},
+                params={
+                    "query": keyword,
+                    "per_page": 15,
+                    "page": page,
+                    "orientation": "landscape",
+                    "size": "large",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            photos = resp.json().get("photos", [])
+            if not photos:
+                return None
+
+            photo = random.choice(photos)
+            img_url = photo["src"]["large2x"]
+            img_resp = requests.get(img_url, timeout=30)
+            img_resp.raise_for_status()
+            with open(cache_path, "wb") as f:
+                f.write(img_resp.content)
+            return cache_path
+        except Exception as e:
+            print(f"  [背景搜索失败] {keyword}: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # 程序化渐变背景生成
+    # ------------------------------------------------------------------
+
+    def _generate_gradient_bg(self, slide_type: str) -> Image.Image:
+        """根据当前色板和页面类型，程序化生成渐变背景。"""
+        palette = self._current_palette
+        colors = palette["colors"]
+
+        type_params = {
+            "cover": {"brightness": 0.9, "angle_offset": 0},
+            "section": {"brightness": 0.85, "angle_offset": 45},
+            "content": {"brightness": 0.7, "angle_offset": 15},
+            "ending": {"brightness": 0.9, "angle_offset": -15},
+        }
+        params = type_params.get(slide_type, type_params["content"])
+        brightness = params["brightness"]
+        angle = self._gradient_angle + params["angle_offset"]
+
+        angle_rad = math.radians(angle)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+
+        w, h = self.width, self.height
+        xs = np.arange(w, dtype=np.float32)
+        ys = np.arange(h, dtype=np.float32)
+        xx, yy = np.meshgrid(xs, ys)
+
+        # 沿渐变方向归一化到 [0, 1]
+        projected = (xx / w - 0.5) * cos_a + (yy / h - 0.5) * sin_a
+        t = (projected - projected.min()) / (projected.max() - projected.min() + 1e-8)
+
+        # 多色渐变插值
+        n_colors = len(colors)
+        img_array = np.zeros((h, w, 3), dtype=np.float32)
+
+        for ch in range(3):
+            color_values = [c[ch] * brightness for c in colors]
+            # 将 t 映射到分段区间
+            for seg in range(n_colors - 1):
+                seg_start = seg / (n_colors - 1)
+                seg_end = (seg + 1) / (n_colors - 1)
+                mask = (t >= seg_start) & (t < seg_end)
+                if seg == n_colors - 2:
+                    mask = (t >= seg_start) & (t <= seg_end)
+                local_t = (t - seg_start) / (seg_end - seg_start + 1e-8)
+                local_t = np.clip(local_t, 0, 1)
+                img_array[:, :, ch] += mask * (
+                    color_values[seg] * (1 - local_t) + color_values[seg + 1] * local_t
+                )
+
+        img_array = np.clip(img_array, 0, 255).astype(np.uint8)
+        img = Image.fromarray(img_array, "RGB").convert("RGBA")
+        return img
+
+    def _apply_text_overlay(self, bg: Image.Image, slide_type: str) -> Image.Image:
+        """在文字区域叠加半透明深色渐变蒙版，保障文字可读性。"""
+        overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        if slide_type in ("cover", "section", "ending"):
+            # 居中文字：全屏均匀半透明蒙版
+            for y in range(self.height):
+                # 中间区域更暗，边缘较轻
+                center_dist = abs(y / self.height - 0.5) * 2  # 0 at center, 1 at edges
+                alpha = int(100 * (1 - center_dist * 0.6))
+                draw.line([(0, y), (self.width, y)], fill=(0, 0, 0, alpha))
+        else:
+            # 内容页：左侧和顶部文字区域加深
+            for y in range(self.height):
+                # 上半部分更暗（标题区），下半部分稍轻
+                if y < self.height * 0.15:
+                    alpha = 120
+                elif y < self.height * 0.5:
+                    alpha = 100
+                else:
+                    t = (y - self.height * 0.5) / (self.height * 0.5)
+                    alpha = int(100 * (1 - t * 0.5))
+                draw.line([(0, y), (self.width, y)], fill=(0, 0, 0, alpha))
+
+        bg = Image.alpha_composite(bg, overlay)
+        return bg
 
     # ------------------------------------------------------------------
     # DeepSeek 大纲提取
@@ -226,6 +438,15 @@ class SlideGenerator:
         return os.path.join(self.bg_dir, bg_map.get(slide_type, "内容页.png"))
 
     def _load_bg(self, slide_type: str) -> Image.Image:
+        if self.bg_mode == "gradient":
+            if self._bg_image_path and os.path.exists(self._bg_image_path):
+                bg = Image.open(self._bg_image_path).convert("RGBA")
+                bg = bg.resize((self.width, self.height), Image.LANCZOS)
+            else:
+                bg = self._generate_gradient_bg(slide_type)
+            bg = self._apply_text_overlay(bg, slide_type)
+            return bg
+
         bg = Image.open(self._bg_path(slide_type)).convert("RGBA")
         return bg.resize((self.width, self.height), Image.LANCZOS)
 
