@@ -1,6 +1,10 @@
 """桥接脚本：将 ai-daily 生成的金融日报 txt 文件转为数字人口播视频。
 
 用法：
+  # 指定主题搜索最新资讯并生成视频（推荐）
+  python generate_video_from_report.py --topic "AI大模型最新进展"
+  python generate_video_from_report.py --topic "量子计算" --no-avatar
+
   # 一键：抓取新闻 → 生成日报 → 生成视频
   python generate_video_from_report.py --generate
 
@@ -29,6 +33,7 @@
 import argparse
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -83,8 +88,31 @@ def resolve_report_path(date_str: str | None, explicit_path: str | None) -> Path
     return p
 
 
+def generate_from_topic(topic: str, config_path: str) -> Path:
+    """搜索指定主题的最新资讯并整理为口播文稿，返回临时文件路径。"""
+    from src.topic_searcher import TopicSearcher
+
+    print(f"{'=' * 60}")
+    print(f"  阶段 1：搜索主题资讯「{topic}」")
+    print(f"{'=' * 60}\n")
+
+    searcher = TopicSearcher(config_path)
+    report_text = searcher.search_and_summarize(topic)
+
+    output_dir = Path("output")
+    output_dir.mkdir(exist_ok=True)
+    report_path = output_dir / f"topic_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    report_path.write_text(report_text, encoding="utf-8")
+
+    print(f"\n  文稿已保存: {report_path}")
+    print(f"  字数: {len(report_text)}\n")
+    return report_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="金融日报 → 数字人口播视频")
+    parser.add_argument("--topic", type=str,
+                        help="指定主题，自动搜索最新资讯并生成视频")
     parser.add_argument("--generate", action="store_true",
                         help="先调用 ai-daily 生成日报，再生成视频（一键模式）")
     parser.add_argument("--report-path", type=str, help="日报 txt 文件路径")
@@ -97,7 +125,9 @@ def main() -> None:
     parser.add_argument("--config", type=str, default="config.yaml", help="配置文件路径")
     args = parser.parse_args()
 
-    if args.generate:
+    if args.topic:
+        report_path = generate_from_topic(args.topic, args.config)
+    elif args.generate:
         report_path = generate_report(args.date)
     else:
         report_path = resolve_report_path(args.date, args.report_path)
