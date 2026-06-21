@@ -251,18 +251,29 @@ class SlideGenerator:
     # ------------------------------------------------------------------
 
     _BG_SEARCH_KEYWORDS = [
-        "dark abstract background",
-        "dark gradient texture",
-        "dark geometric pattern",
-        "dark bokeh background",
-        "dark blue abstract",
-        "dark purple abstract",
-        "dark technology background",
-        "dark nature landscape night",
-        "dark space nebula",
-        "dark underwater",
-        "dark forest moody",
-        "dark mountain silhouette",
+      # 科技风格
+      "dark technology background",
+      "dark cyberpunk city",
+      "dark futuristic interface",
+      "dark digital network",
+      "dark ai technology",
+  
+      # 自然风格
+      "dark forest moody",
+      "dark mountain silhouette",
+      "dark ocean night",
+      "dark nature landscape night",
+      "dark cave",
+  
+      # 宇宙风格
+      "dark space nebula",
+      "dark galaxy",
+      "dark stars background",
+  
+      # 光影风格
+      "dark bokeh background",
+      "dark cinematic lighting",
+      "dark spotlight texture",
     ]
 
     def _search_bg_from_pexels(self) -> str | None:
