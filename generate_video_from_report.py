@@ -1,9 +1,15 @@
 """桥接脚本：将 ai-daily 生成的金融日报 txt 文件转为数字人口播视频。
 
 用法：
-  # 指定主题搜索最新资讯并生成视频（推荐）
+  # 自动选取热门话题并生成视频（全自动模式）
+  python generate_video_from_report.py --topic
+
+  # 指定主题搜索最新资讯并生成视频
   python generate_video_from_report.py --topic "AI大模型最新进展"
-  python generate_video_from_report.py --topic "量子计算" --no-avatar
+  python generate_video_from_report.py --topic "量子计算"
+
+  # 指定主题tts步骤重启
+  python main.py --script-json output/script_20260621_xxxxxx.json --bg-dir output/slides/topic_bg
 
   # 一键：抓取新闻 → 生成日报 → 生成视频
   python generate_video_from_report.py --generate
@@ -33,7 +39,6 @@
 import argparse
 import subprocess
 import sys
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -111,8 +116,8 @@ def generate_from_topic(topic: str, config_path: str) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="金融日报 → 数字人口播视频")
-    parser.add_argument("--topic", type=str,
-                        help="指定主题，自动搜索最新资讯并生成视频")
+    parser.add_argument("--topic", nargs="?", const="__auto__", default=None,
+                        help="指定主题生成视频；不带参数则自动选取热门话题")
     parser.add_argument("--generate", action="store_true",
                         help="先调用 ai-daily 生成日报，再生成视频（一键模式）")
     parser.add_argument("--report-path", type=str, help="日报 txt 文件路径")
@@ -126,7 +131,42 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.topic:
-        report_path = generate_from_topic(args.topic, args.config)
+        if args.topic == "__auto__":
+            from src.topic_searcher import TopicSearcher
+            searcher = TopicSearcher(args.config)
+            topics = searcher.auto_select_topics(args.date)
+            print(f"\n  自动选取热门话题: {topics}\n")
+            topic = "、".join(topics)
+        else:
+            topic = args.topic
+
+        from src.script_generator import ScriptGenerator
+        gen = ScriptGenerator(args.config)
+        script_data = gen.generate(topic)
+
+        script_json_path = Path("output") / f"script_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        script_json_path.parent.mkdir(parents=True, exist_ok=True)
+        import json
+        script_json_path.write_text(json.dumps(script_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"  文稿 JSON: {script_json_path}")
+
+        print(f"\n{'=' * 60}")
+        print(f"  阶段 2：生成口播视频（话题模式）")
+        print(f"{'=' * 60}\n")
+
+        cmd = [sys.executable, str(MAIN_SCRIPT), "--script-json", str(script_json_path)]
+        if args.voice:
+            cmd += ["--voice", args.voice]
+        if args.rate:
+            cmd += ["--rate", args.rate]
+        if args.output:
+            cmd += ["--output", args.output]
+        if args.config:
+            cmd += ["--config", args.config]
+
+        result = subprocess.run(cmd, encoding="utf-8", errors="replace")
+        sys.exit(result.returncode)
+
     elif args.generate:
         report_path = generate_report(args.date)
     else:

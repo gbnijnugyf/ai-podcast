@@ -10,12 +10,21 @@
 """
 
 import re
+import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote_plus
 
 import requests
 import yaml
 from openai import OpenAI
+
+
+AI_DAILY_ROOT = Path(r"D:\Study\aiproject\ai-daily\paper_daily")
+AI_DAILY_OUTPUT_ROOT = AI_DAILY_ROOT / "output"
+REPORT_FILENAME = "finance_daily_report.txt"
+GENERATE_SCRIPT = AI_DAILY_ROOT / "generate_report_only.py"
 
 
 SUMMARIZE_PROMPT = """你是一个专业的新闻编辑。请根据以下搜索结果，整理出一篇关于「{topic}」的资讯简报。
@@ -31,6 +40,24 @@ SUMMARIZE_PROMPT = """你是一个专业的新闻编辑。请根据以下搜索�
 
 搜索结果：
 {results}
+"""
+
+TOPIC_SELECTION_PROMPT = """你是一个资深新闻编辑。请根据以下今日资讯汇总，选出 2-3 个最适合做短视频口播的热门话题。
+
+选题标准：
+1. 时效性强（当天或近期的热点新闻）
+2. 大众关注度高（科技、财经、社会、AI 等领域优先）
+3. 内容有信息量和话题性，适合 2 分钟口播讲解
+4. 2-3 个话题之间尽量覆盖不同领域，避免重复
+
+今日资讯来源 1（金融/科技日报）：
+{daily_report}
+
+今日资讯来源 2（Bing 热搜新闻）：
+{bing_news}
+
+请严格按以下 JSON 格式输出，不要包含其他内容：
+["话题1的简短标题", "话题2的简短标题", "话题3的简短标题"]
 """
 
 
@@ -177,3 +204,90 @@ class TopicSearcher:
         if not results:
             raise RuntimeError(f"未搜索到与「{topic}」相关的结果")
         return self.summarize(topic, results)
+
+    # ------------------------------------------------------------------
+    # 自动选题
+    # ------------------------------------------------------------------
+
+    def auto_select_topics(self, date_str: str | None = None) -> list[str]:
+        """结合 ai-daily 输出和 Bing 热搜，自动选出 2-3 个热门话题。
+
+        ai-daily 是必须流程：若当天无输出则先生成。
+        """
+        if date_str is None:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+
+        print(f"{'=' * 60}")
+        print(f"  阶段 1：自动选取热门话题")
+        print(f"{'=' * 60}\n")
+
+        daily_report = self._ensure_daily_report(date_str)
+        bing_news = self._fetch_bing_trending()
+
+        print("  调用 LLM 筛选热门话题...")
+        prompt = TOPIC_SELECTION_PROMPT.format(
+            daily_report=daily_report[:3000],
+            bing_news=bing_news[:2000],
+        )
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "你是一个资深新闻编辑，擅长发现热点话题。请严格按 JSON 数组格式输出。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+        )
+
+        raw = response.choices[0].message.content.strip()
+        import json
+        try:
+            match = re.search(r'\[.*\]', raw, re.DOTALL)
+            topics = json.loads(match.group()) if match else json.loads(raw)
+        except (json.JSONDecodeError, AttributeError):
+            topics = [line.strip().strip('"').strip("'") for line in raw.splitlines() if line.strip()]
+
+        topics = [t for t in topics if t][:3]
+        if not topics:
+            raise RuntimeError("LLM 未能选出有效话题")
+
+        return topics
+
+    def _ensure_daily_report(self, date_str: str) -> str:
+        """确保 ai-daily 当天输出存在，若不存在则生成。返回日报文本。"""
+        report_path = AI_DAILY_OUTPUT_ROOT / date_str / REPORT_FILENAME
+
+        if not report_path.exists():
+            print(f"  未找到 {date_str} 的日报，正在生成...")
+            if not GENERATE_SCRIPT.exists():
+                raise FileNotFoundError(f"ai-daily 脚本不存在: {GENERATE_SCRIPT}")
+
+            result = subprocess.run(
+                [sys.executable, str(GENERATE_SCRIPT), "--date", date_str],
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(AI_DAILY_ROOT),
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"ai-daily 生成失败 (exit code {result.returncode})")
+
+            if not report_path.exists():
+                raise FileNotFoundError(f"日报生成后仍未找到文件: {report_path}")
+
+        print(f"  日报文件: {report_path}")
+        return report_path.read_text(encoding="utf-8")
+
+    def _fetch_bing_trending(self) -> str:
+        """获取 Bing 当日热搜新闻摘要。"""
+        print("  获取 Bing 热搜新闻...")
+        results = self._search_bing_news("今日热点新闻", 15)
+        if not results:
+            results = self._search_bing_web("今日热点 科技 财经", 10)
+
+        text_parts = []
+        for r in results[:15]:
+            text_parts.append(f"- {r['title']}: {r['body'][:100]}")
+
+        summary = "\n".join(text_parts)
+        print(f"  获取到 {len(results)} 条热搜")
+        return summary

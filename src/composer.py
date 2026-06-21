@@ -441,6 +441,187 @@ class VideoComposer:
 
         return output_path
 
+    def compose_topic_video(
+        self,
+        bg_paths: list[str],
+        slide_durations: list[float],
+        audio_path: str,
+        output_path: str | None = None,
+        srt_path: str | None = None,
+        intro_video: str | None = None,
+        intro_duration: float = 0.0,
+        title_text: str | None = None,
+    ) -> str:
+        """话题模式合成：片头视频 + 全屏背景图硬切 + 音频 + 白色字体红色描边字幕。"""
+        if output_path is None:
+            output_path = os.path.join(self.output_dir, "output.mp4")
+
+        total_duration = sum(slide_durations) + intro_duration
+        print(f"  总时长: {total_duration:.1f}s（片头 {intro_duration:.1f}s + 正文 {sum(slide_durations):.1f}s）")
+
+        slide_video = os.path.join(self.output_dir, "_topic_slides.mp4")
+        self._make_topic_slide_video(bg_paths, slide_durations, slide_video, intro_video, intro_duration, title_text)
+
+        cmd = [
+            self.ffmpeg, "-y",
+            "-i", slide_video,
+            "-i", audio_path,
+        ]
+
+        if srt_path and os.path.exists(srt_path):
+            srt_rel = os.path.relpath(srt_path).replace("\\", "/")
+            subtitle_style = (
+                "FontName=Microsoft YaHei,"
+                "FontSize=18,"
+                "PrimaryColour=&H00FFFFFF,"
+                "OutlineColour=&H000000FF,"
+                "Outline=3,"
+                "Shadow=0,"
+                "Bold=1,"
+                "MarginV=40"
+            )
+            cmd += [
+                "-vf", f"subtitles='{srt_rel}':force_style='{subtitle_style}'",
+            ]
+
+        cmd += [
+            "-map", "0:v",
+            "-map", "1:a",
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-pix_fmt", "yuv420p",
+            "-t", str(total_duration),
+            output_path,
+        ]
+
+        self._run_ffmpeg(cmd, "合成话题视频")
+        print(f"  视频已生成: {output_path}")
+
+        if os.path.exists(slide_video):
+            os.remove(slide_video)
+
+        return output_path
+
+    def _make_topic_slide_video(
+        self,
+        bg_paths: list[str],
+        slide_durations: list[float],
+        output_path: str,
+        intro_video: str | None = None,
+        intro_duration: float = 0.0,
+        title_text: str | None = None,
+    ):
+        """将片头视频 + 背景图序列生成视频（硬切，无转场）。"""
+        if not bg_paths and not intro_video:
+            raise ValueError("没有背景图片或片头视频")
+
+        page_videos = []
+        temp_files = []
+
+        if intro_video and intro_duration > 0:
+            intro_page = os.path.join(self.output_dir, "_topic_intro.mp4")
+            self._make_intro_segment(intro_video, intro_duration, intro_page, title_text)
+            page_videos.append(intro_page)
+            temp_files.append(intro_page)
+
+        for i, (bg_path, dur) in enumerate(zip(bg_paths, slide_durations)):
+            page_video = os.path.join(self.output_dir, f"_topic_page_{i:03d}.mp4")
+            page_videos.append(page_video)
+            temp_files.append(page_video)
+            self._make_page_video_static(bg_path, dur, page_video)
+
+        if len(page_videos) == 1:
+            os.rename(page_videos[0], output_path)
+            return
+
+        self._concat_simple(page_videos, output_path)
+
+        for f in temp_files:
+            if os.path.exists(f):
+                os.remove(f)
+
+    def _make_intro_segment(
+        self, intro_video: str, duration: float, output_path: str,
+        title_text: str | None = None,
+    ):
+        """从片头视频裁剪指定时长的片段，缩放到 1920x1080，叠加标题文字。
+
+        不循环：duration 不应超过源视频时长（由调用方保证）。
+        title_text 如果提供，前 5 秒在画面中央显示标题文字。
+        分两步执行避免 Windows 下 FFmpeg 滤镜转义问题。
+        """
+        output_abs = output_path.replace("\\", "/")
+
+        if title_text:
+            scaled_tmp = output_abs.replace(".mp4", "_scaled.mp4")
+        else:
+            scaled_tmp = output_abs
+
+        self._run_ffmpeg([
+            self.ffmpeg, "-y",
+            "-i", os.path.abspath(intro_video),
+            "-t", f"{duration:.3f}",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            "-r", str(self.fps),
+            "-c:v", "libx264",
+            "-an",
+            "-pix_fmt", "yuv420p",
+            scaled_tmp,
+        ], "片头视频缩放")
+
+        if title_text:
+            lines = title_text.split("\\n")
+            font_path = "C\\\\:/Windows/Fonts/msyhbd.ttc"
+
+            if len(lines) >= 2:
+                line1 = lines[0]
+                line2 = lines[1]
+
+                dt1_tmp = output_abs.replace(".mp4", "_dt1.mp4")
+                self._run_ffmpeg([
+                    self.ffmpeg, "-y",
+                    "-i", scaled_tmp,
+                    "-vf",
+                    f"drawtext=fontfile={font_path}:text={line1}:"
+                    f"fontsize=128:fontcolor=white:borderw=4:bordercolor=black@0.6:"
+                    f"x=(w-text_w)/2:y=(h/2-text_h-20):"
+                    f"enable=between(t\\,0\\,5)",
+                    "-c:v", "libx264", "-an", "-pix_fmt", "yuv420p",
+                    dt1_tmp,
+                ], "片头标题第一行")
+
+                self._run_ffmpeg([
+                    self.ffmpeg, "-y",
+                    "-i", dt1_tmp,
+                    "-vf",
+                    f"drawtext=fontfile={font_path}:text={line2}:"
+                    f"fontsize=104:fontcolor=white:borderw=3:bordercolor=black@0.6:"
+                    f"x=(w-text_w)/2:y=(h/2+20):"
+                    f"enable=between(t\\,0\\,5)",
+                    "-c:v", "libx264", "-an", "-pix_fmt", "yuv420p",
+                    output_abs,
+                ], "片头标题第二行")
+
+                for tmp_f in [scaled_tmp, dt1_tmp]:
+                    if os.path.exists(tmp_f):
+                        os.remove(tmp_f)
+            else:
+                line1 = lines[0]
+                self._run_ffmpeg([
+                    self.ffmpeg, "-y",
+                    "-i", scaled_tmp,
+                    "-vf",
+                    f"drawtext=fontfile={font_path}:text={line1}:"
+                    f"fontsize=128:fontcolor=white:borderw=4:bordercolor=black@0.6:"
+                    f"x=(w-text_w)/2:y=(h-text_h)/2:"
+                    f"enable=between(t\\,0\\,5)",
+                    "-c:v", "libx264", "-an", "-pix_fmt", "yuv420p",
+                    output_abs,
+                ], "片头标题")
+
+                if os.path.exists(scaled_tmp):
+                    os.remove(scaled_tmp)
+
 
 if __name__ == "__main__":
     print("composer.py 需要通过 main.py 调用")

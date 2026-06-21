@@ -86,15 +86,8 @@ def generate_srt(
         dur = slide_durations[i] if i < len(slide_durations) else 3.0
 
         if not narration:
+            time_offset += dur
             continue
-
-        # 用实际音频文件时长计算偏移，避免累积误差
-        actual_audio_dur = None
-        if audio_paths and i < len(audio_paths) and audio_paths[i]:
-            try:
-                actual_audio_dur = subprocess_get_duration(audio_paths[i])
-            except Exception:
-                pass
 
         ts_list = all_timestamps[i] if all_timestamps and i < len(all_timestamps) else []
         sentence_ts = [t for t in ts_list if t["type"] == "SentenceBoundary"]
@@ -117,15 +110,14 @@ def generate_srt(
         else:
             chunks = _split_narration(narration)
             total_chars = sum(len(c) for c in chunks)
-            fallback_dur = actual_audio_dur or dur
             for j, chunk in enumerate(chunks):
                 char_offset = sum(len(chunks[k]) for k in range(j))
-                start = time_offset + fallback_dur * char_offset / max(total_chars, 1)
-                end = time_offset + fallback_dur * (char_offset + len(chunk)) / max(total_chars, 1) - 0.05
+                start = time_offset + dur * char_offset / max(total_chars, 1)
+                end = time_offset + dur * (char_offset + len(chunk)) / max(total_chars, 1) - 0.05
                 entries.append(f"{idx}\n{_format_srt_time(start)} --> {_format_srt_time(end)}\n{chunk}\n")
                 idx += 1
 
-        time_offset += actual_audio_dur if actual_audio_dur else dur
+        time_offset += dur
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
@@ -135,10 +127,168 @@ def generate_srt(
     return output_path
 
 
+def _run_topic_pipeline(args, config: dict):
+    """话题模式流水线：片头 + 结构化文稿 → 背景图 → TTS → 合成视频。"""
+    from src.background_searcher import BackgroundSearcher
+    from src.tts import TTSEngine
+    from src.composer import VideoComposer
+
+    start_time = time.time()
+
+    with open(args.script_json, "r", encoding="utf-8") as f:
+        script_data = json.load(f)
+
+    opening = script_data.get("opening", "")
+    blocks = []
+    for ch in script_data["chapters"]:
+        for block in ch["blocks"]:
+            blocks.append(block)
+
+    print(f"话题: {script_data.get('title', '未知')}")
+    print(f"开场: {opening[:50]}...")
+    print(f"章节: {len(script_data['chapters'])} 个, 内容块: {len(blocks)} 个")
+    print(f"TTS 音色: {config['tts']['voice']}")
+    print(f"TTS 语速: {config['tts'].get('rate', '+0%')}")
+
+    # -------------------------------------------------------
+    # 1. 下载背景图（仅正文 blocks）
+    # -------------------------------------------------------
+    print("\n" + "=" * 50)
+    print("【第 1 步】搜索下载背景图")
+    print("=" * 50)
+
+    bg_output_dir = os.path.join(config.get("slides", {}).get("output_dir", "output/slides"), "topic_bg")
+
+    if getattr(args, "bg_dir", None) and os.path.isdir(args.bg_dir):
+        bg_files = sorted([
+            os.path.join(args.bg_dir, f)
+            for f in os.listdir(args.bg_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        ])
+        bg_paths = bg_files[:len(blocks)]
+        print(f"  使用已有背景图目录: {args.bg_dir} ({len(bg_paths)} 张)")
+    else:
+        bg_searcher = BackgroundSearcher(args.config)
+        bg_paths = bg_searcher.download_for_script(script_data, bg_output_dir)
+        print(f"  背景图: {len(bg_paths)} 张")
+
+    # -------------------------------------------------------
+    # 2. TTS 语音合成（opening + 正文 blocks）
+    # -------------------------------------------------------
+    print("\n" + "=" * 50)
+    print("【第 2 步】TTS 语音合成")
+    print("=" * 50)
+
+    all_slides_data = []
+    if opening:
+        all_slides_data.append({"narration": opening})
+    all_slides_data += [{"narration": b["narration"]} for b in blocks]
+
+    tts = TTSEngine(args.config)
+    if args.voice:
+        tts.voice = args.voice
+    if args.rate:
+        tts.rate = args.rate
+    audio_paths, all_timestamps = tts.synthesize_slides(all_slides_data)
+
+    composer = VideoComposer(args.config)
+    audio_output_dir = config["tts"]["output_dir"]
+    full_audio = os.path.join(audio_output_dir, "full.mp3")
+    full_audio = composer.concat_audio(audio_paths, full_audio)
+    total_audio_duration = composer.get_audio_duration(full_audio)
+    print(f"  总音频时长: {total_audio_duration:.1f}s")
+
+    # 计算每段时长（opening + blocks）
+    all_durations = []
+    for i, ap in enumerate(audio_paths):
+        if ap and os.path.exists(ap):
+            try:
+                dur = subprocess_get_duration(ap, args.config)
+                all_durations.append(dur)
+            except Exception:
+                all_durations.append(total_audio_duration / len(all_slides_data))
+        else:
+            all_durations.append(total_audio_duration / len(all_slides_data))
+
+    current_total = sum(all_durations)
+    if current_total > 0 and abs(current_total - total_audio_duration) > 0.5:
+        scale = total_audio_duration / current_total
+        all_durations = [d * scale for d in all_durations]
+
+    # 分离 opening 时长和正文时长
+    if opening:
+        intro_duration = all_durations[0]
+        slide_durations = all_durations[1:]
+    else:
+        intro_duration = 0.0
+        slide_durations = all_durations
+
+    print(f"  片头时长: {intro_duration:.1f}s")
+    print(f"  正文每块时长: {[f'{d:.1f}s' for d in slide_durations]}")
+
+    # -------------------------------------------------------
+    # 3. 生成字幕（opening + blocks 全部生成字幕）
+    # -------------------------------------------------------
+    print("\n" + "=" * 50)
+    print("【第 3 步】生成字幕")
+    print("=" * 50)
+
+    srt_path = os.path.join(config.get("video", {}).get("output_dir", "output/video"), "subtitles.srt")
+    generate_srt(all_slides_data, all_durations, srt_path, all_timestamps, audio_paths)
+
+    # -------------------------------------------------------
+    # 4. 视频合成（片头视频 + 背景图硬切）
+    # -------------------------------------------------------
+    print("\n" + "=" * 50)
+    print("【第 4 步】视频合成（话题模式）")
+    print("=" * 50)
+
+    intro_video = config.get("video", {}).get("intro_video", "")
+    if intro_video and not os.path.isabs(intro_video):
+        intro_video = os.path.abspath(intro_video)
+    if not intro_video or not os.path.exists(intro_video):
+        print(f"  [警告] 片头视频不存在: {intro_video}，跳过片头")
+        intro_video = None
+        intro_duration = 0.0
+
+    if intro_video and intro_duration > 0:
+        intro_video_duration = composer.get_audio_duration(intro_video)
+        if intro_duration > intro_video_duration:
+            overflow = intro_duration - intro_video_duration
+            print(f"  片头口播 ({intro_duration:.1f}s) 超过片头视频 ({intro_video_duration:.1f}s)，"
+                  f"溢出 {overflow:.1f}s 并入第一张背景图")
+            intro_duration = intro_video_duration
+            if slide_durations:
+                slide_durations[0] += overflow
+
+    from datetime import datetime
+    now = datetime.now()
+    title_text = f"{now.year}.{now.month}.{now.day}\\n热点资讯"
+
+    output_path = composer.compose_topic_video(
+        bg_paths=bg_paths,
+        slide_durations=slide_durations,
+        audio_path=full_audio,
+        output_path=args.output,
+        srt_path=srt_path,
+        intro_video=intro_video,
+        intro_duration=intro_duration,
+        title_text=title_text,
+    )
+
+    elapsed = time.time() - start_time
+    print("\n" + "=" * 50)
+    print(f"完成！总用时: {elapsed:.1f}s")
+    print(f"输出视频: {output_path}")
+    print("=" * 50)
+
+
 def main():
     parser = argparse.ArgumentParser(description="数字人口播视频生成工具")
     parser.add_argument("--text", type=str, help="讲解文本内容")
     parser.add_argument("--text-file", type=str, help="从文件读取讲解文本")
+    parser.add_argument("--script-json", type=str, help="话题模式：结构化口播文稿 JSON 文件路径")
+    parser.add_argument("--bg-dir", type=str, help="话题模式：已有背景图目录（跳过图片下载，从 TTS 阶段继续）")
     parser.add_argument("--slides-dir", type=str, help="已有幻灯片图片目录（跳过自动生成）")
     parser.add_argument("--model", type=str, default="asset/swat.fbx", help="3D 模型路径")
     parser.add_argument("--anim", type=str, default="asset/animations", help="动画 FBX 文件或目录路径")
@@ -155,6 +305,10 @@ def main():
         config["tts"]["voice"] = args.voice
     if args.rate:
         config["tts"]["rate"] = args.rate
+
+    if args.script_json:
+        _run_topic_pipeline(args, config)
+        return
 
     # -------------------------------------------------------
     # 1. 获取输入文本
