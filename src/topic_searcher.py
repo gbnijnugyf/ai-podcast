@@ -191,7 +191,7 @@ class TopicSearcher:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "你是一个专业的新闻编辑，擅长将碎片化的信息整理为结构清晰的简报。"},
+                {"role": "system", "content": "你是一个专业的新闻编辑，擅长将碎片化的信息整理为口播文稿，语言生动富有感染力、逻辑清晰且需要深入分析并抛出观点。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.5,
@@ -226,14 +226,14 @@ class TopicSearcher:
 
         print("  调用 LLM 筛选热门话题...")
         prompt = TOPIC_SELECTION_PROMPT.format(
-            daily_report=daily_report[:3000],
+            daily_report='',
             bing_news=bing_news[:2000],
         )
 
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "你是一个资深新闻编辑，擅长发现热点话题。请严格按 JSON 数组格式输出。"},
+                {"role": "system", "content": "你是一个资深新闻编辑，擅长发现热点（财经、科技类）话题, 与AI相关的话题权重高60%。请严格按 JSON 数组格式输出。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,

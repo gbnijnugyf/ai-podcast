@@ -7,10 +7,16 @@
 
 import hashlib
 import os
+import random
+import time
 
 import requests
 import yaml
 from PIL import Image
+
+
+# 兜底图片目录（从 asset/topic_bg_default 随机选取）
+FALLBACK_BG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "asset", "topic_bg_default")
 
 
 class BackgroundSearcher:
@@ -25,6 +31,9 @@ class BackgroundSearcher:
 
         self.width = config.get("slides", {}).get("width", 1920)
         self.height = config.get("slides", {}).get("height", 1080)
+
+        # 追踪本次工作流中已使用过的兜底图片（避免重复）
+        self._used_fallback_images: set[str] = set()
 
     def search_and_download(self, keyword: str) -> str | None:
         """搜索关键词对应的横版图片，下载后缩放为全屏尺寸返回路径。
@@ -83,44 +92,73 @@ class BackgroundSearcher:
                 else:
                     fallback = self._generate_fallback(keyword, output_dir, block_idx)
                     paths.append(fallback)
-                    print(f"      → 使用纯色兜底: {fallback}")
+                    print(f"      → 使用默认兜底图片: {fallback}")
 
         return paths
 
     def _search_pexels(self, keyword: str) -> str | None:
-        """从 Pexels 搜索横版图片，返回图片 URL。"""
+        """从 Pexels 搜索横版图片，返回图片 URL。失败时指数退避重试。"""
         if not self.pexels_api_key:
             return None
 
-        try:
-            resp = requests.get(
-                "https://api.pexels.com/v1/search",
-                headers={"Authorization": self.pexels_api_key},
-                params={
-                    "query": keyword,
-                    "per_page": 5,
-                    "orientation": "landscape",
-                    "size": "large",
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            photos = resp.json().get("photos", [])
-            if photos:
-                return photos[0]["src"]["large2x"]
-        except Exception as e:
-            print(f"    [Pexels 失败] {keyword}: {e}")
+        max_retries = 5
+        delay = 1
+        last_error = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = requests.get(
+                    "https://api.pexels.com/v1/search",
+                    headers={"Authorization": self.pexels_api_key},
+                    params={
+                        "query": keyword,
+                        "per_page": 5,
+                        "orientation": "landscape",
+                        "size": "large",
+                    },
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                photos = resp.json().get("photos", [])
+                if photos:
+                    return photos[0]["src"]["large2x"]
+
+                # 搜索成功但无结果，无需重试
+                return None
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    print(f"    [Pexels 重试 {attempt}/{max_retries}] {keyword}: {e}")
+                    print(f"      等待 {delay}s 后重试...")
+                    time.sleep(delay)
+                    delay *= 2
+
+        print(f"    [Pexels 失败] {keyword}: {last_error}")
         return None
 
     def _search_unsplash(self, keyword: str) -> str | None:
-        """从 Unsplash Source 获取图片（无需 API Key）。"""
-        try:
-            url = f"https://source.unsplash.com/1920x1080/?{keyword.replace(' ', ',')}"
-            resp = requests.get(url, timeout=20, allow_redirects=True)
-            if resp.status_code == 200 and len(resp.content) > 5000:
-                return resp.url
-        except Exception as e:
-            print(f"    [Unsplash 失败] {keyword}: {e}")
+        """从 Unsplash Source 获取图片（无需 API Key）。失败时指数退避重试。"""
+        max_retries = 5
+        delay = 1
+        last_error = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                url = f"https://source.unsplash.com/1920x1080/?{keyword.replace(' ', ',')}"
+                resp = requests.get(url, timeout=20, allow_redirects=True)
+                if resp.status_code == 200 and len(resp.content) > 5000:
+                    return resp.url
+                # 请求成功但内容不符合要求，无需重试
+                return None
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    print(f"    [Unsplash 重试 {attempt}/{max_retries}] {keyword}: {e}")
+                    print(f"      等待 {delay}s 后重试...")
+                    time.sleep(delay)
+                    delay *= 2
+
+        print(f"    [Unsplash 失败] {keyword}: {last_error}")
         return None
 
     def _resize_to_fullscreen(self, src_path: str, dest_path: str):
@@ -144,8 +182,37 @@ class BackgroundSearcher:
         img.save(dest_path, "JPEG", quality=92)
 
     def _generate_fallback(self, keyword: str, output_dir: str, idx: int) -> str:
-        """搜索全部失败时生成深色纯色背景作为兜底。"""
-        img = Image.new("RGB", (self.width, self.height), (25, 25, 35))
-        path = os.path.join(output_dir, f"bg_{idx:03d}.jpg")
-        img.save(path, "JPEG", quality=92)
-        return path
+        """从默认兜底图片目录随机选取一张（同一工作流避免重复）。"""
+        dest = os.path.join(output_dir, f"bg_{idx:03d}.jpg")
+
+        if not os.path.isdir(FALLBACK_BG_DIR):
+            # 目录不存在时降级为纯色背景
+            img = Image.new("RGB", (self.width, self.height), (25, 25, 35))
+            img.save(dest, "JPEG", quality=92)
+            return dest
+
+        # 扫描目录下的图片文件
+        all_images = sorted([
+            os.path.join(FALLBACK_BG_DIR, f)
+            for f in os.listdir(FALLBACK_BG_DIR)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        ])
+        if not all_images:
+            img = Image.new("RGB", (self.width, self.height), (25, 25, 35))
+            img.save(dest, "JPEG", quality=92)
+            return dest
+
+        # 如果所有图片都已用过，重置记录，允许重复使用
+        available = [p for p in all_images if p not in self._used_fallback_images]
+        if not available:
+            self._used_fallback_images.clear()
+            available = all_images
+
+        chosen = random.choice(available)
+        self._used_fallback_images.add(chosen)
+
+        # 缩放为全屏尺寸
+        img = Image.open(chosen).convert("RGB")
+        img = img.resize((self.width, self.height), Image.LANCZOS)
+        img.save(dest, "JPEG", quality=92)
+        return dest
