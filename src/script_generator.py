@@ -73,6 +73,82 @@ SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，擅长用�
 """
 
 
+ARTICLE_SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，擅长把书面文章改写成生动有力的口播文稿。
+请根据以下整篇文稿，将其改写为一篇适合短视频口播的文稿。
+
+严格要求：
+1. 保留原文的核心信息和逻辑脉络，但用更口语化、更有节奏感的方式重新组织
+2. 必须包含 opening（开场概括）：用 1-2 句话点出今天的核心话题，简洁有力，约 20-30 字（朗读不超过 8 秒）
+3. 正文分为 2-3 个章节（chapter），每个章节聚焦一个子话题并有深度
+4. 每个章节包含 2-4 个内容块（block）
+5. 每个 block 的 narration 包含 2-3 个分句，朗读时长约 4-8 秒（约 30-60 字）
+6. 每个 block 必须有一个 keyword（英文，用于搜索配图，描述该段核心画面）
+7. keyword 要具体、可视化，能搜索到有意义的图片（如 "nvidia gpu server rack" 而非 "technology"）
+8. 不需要生成结束语，程序会自动追加
+
+写作风格要求：
+- 不要浮于表面罗列信息，要对话题有一定深度的分析
+- 善用修辞手法：类比、设问、对比、排比、数据冲击等
+- 口语化但不随意，像一个专业主播在和观众对话
+- 适当使用短句增强节奏感，关键数据要突出
+- 每个章节之间有逻辑递进（现象→原因→影响 或 事件→分析→展望）
+
+原文文稿：
+{article}
+
+请严格按以下 JSON 格式输出：
+{{
+  "title": "视频主题标题",
+  "opening": "1-2句话点题，约20-30字",
+  "chapters": [
+    {{
+      "chapter_title": "章节标题",
+      "blocks": [
+        {{
+          "keyword": "english image search keyword",
+          "narration": "2-3个分句的口播文本，约30-60字"
+        }}
+      ]
+    }}
+  ]
+}}
+"""
+
+
+TEXT_TO_SCRIPT_PROMPT = """你是一个专业的短视频文稿编辑。
+请将以下整篇文稿**原封不动地**切分为适合口播的内容块，只需组织结构和生成英文关键词，**不要改写原文任何文字**。
+
+要求：
+1. 正文分为 2-3 个章节（chapter），每个章节聚焦一个子话题
+2. 每个章节包含 2-4 个内容块（block）
+3. 每个 block 的 narration **必须直接使用原文文本**，可适当截取原文中的连续片段，但**不得做任何改写、缩写或润色**
+4. 每个 block 约 30-60 字（朗读约 4-8 秒）
+5. 每个 block 必须有一个 keyword（英文，用于搜索配图，描述该段核心画面）
+6. keyword 要具体、可视化，能搜索到有意义的图片（如 "nvidia gpu server rack" 而非 "technology"）
+7. 不需要 opening，不需要结束语
+
+原文文稿：
+{article}
+
+请严格按以下 JSON 格式输出：
+{{
+  "title": "视频主题标题",
+  "opening": "",
+  "chapters": [
+    {{
+      "chapter_title": "章节标题",
+      "blocks": [
+        {{
+          "keyword": "english image search keyword",
+          "narration": "原文文本片段，不得改写"
+        }}
+      ]
+    }}
+  ]
+}}
+"""
+
+
 class ScriptGenerator:
     def __init__(self, config_path: str = "config.yaml"):
         with open(config_path, "r", encoding="utf-8") as f:
@@ -113,6 +189,58 @@ class ScriptGenerator:
         raw = response.choices[0].message.content.strip()
         script_data = self._parse_response(raw)
         self._append_ending(script_data)
+        self._print_summary(script_data)
+        return script_data
+
+    def generate_from_article(self, article_text: str) -> dict:
+        """根据整篇文稿文本生成结构化口播文稿（不搜索资讯）。"""
+        print(f"\n{'=' * 60}")
+        print(f"  根据文稿生成口播文稿")
+        print(f"{'=' * 60}\n")
+
+        prompt = ARTICLE_SCRIPT_PROMPT.format(article=article_text)
+
+        print("  调用 LLM 转换文稿为分块口播...")
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "你是专业短视频文案编辑。严格按 JSON 格式输出，不要输出任何其他内容。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.6,
+        )
+
+        raw = response.choices[0].message.content.strip()
+        script_data = self._parse_response(raw)
+        self._append_ending(script_data)
+        self._print_summary(script_data)
+        return script_data
+
+    def text_to_script(self, article_text: str) -> dict:
+        """将整篇文稿文本直接转换为口播文稿 JSON（保留原文，LLM 负责分块+生成 keyword）。
+
+        用于 --not-convert 模式：LLM 仅对原文做分块和组织结构，
+        不修改 narration 原文，同时为每个 block 生成英文 keyword。
+        """
+        print(f"\n{'=' * 60}")
+        print(f"  原文分块 + 生成关键词（保留原文不改写）")
+        print(f"{'=' * 60}\n")
+
+        prompt = TEXT_TO_SCRIPT_PROMPT.format(article=article_text.strip())
+
+        print("  调用 LLM 进行分块...")
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "你是专业短视频文稿编辑。严格按 JSON 格式输出，不要输出任何其他内容。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,  # 低温确保原文不被改写
+        )
+
+        raw = response.choices[0].message.content.strip()
+        script_data = self._parse_response(raw)
+        # 不追加结束语（not-convert 模式保持原文完整）
         self._print_summary(script_data)
         return script_data
 

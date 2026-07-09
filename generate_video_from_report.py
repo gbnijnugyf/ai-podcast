@@ -1,4 +1,4 @@
-"""桥接脚本：将 ai-daily 生成的金融日报 txt 文件转为数字人口播视频。
+"""桥接脚本：将金融日报或文稿转为数字人口播视频。
 
 用法：
   # 自动选取热门话题并生成视频（全自动模式）
@@ -7,6 +7,13 @@
   # 指定主题搜索最新资讯并生成视频
   python generate_video_from_report.py --topic "AI大模型最新进展"
   python generate_video_from_report.py --topic "量子计算"
+
+  # 根据整篇文稿生成口播视频（LLM 转换）
+  python generate_video_from_report.py --topic-article "整篇文稿文本内容..."
+  python generate_video_from_report.py --topic-article path/to/article.txt
+
+  # 整篇文稿直接作为口播文稿（不经过 LLM 转换）
+  python generate_video_from_report.py --topic-article path/to/article.txt --not-convert
 
   # 指定主题tts步骤重启
   python main.py --script-json output/script_20260621_xxxxxx.json --bg-dir output/slides/topic_bg
@@ -118,6 +125,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="金融日报 → 数字人口播视频")
     parser.add_argument("--topic", nargs="?", const="__auto__", default=None,
                         help="指定主题生成视频；不带参数则自动选取热门话题")
+    parser.add_argument("--topic-article", type=str, default=None,
+                        help="整篇文稿文本或 txt 文件路径，LLM 将其转换为口播文稿")
+    parser.add_argument("--not-convert", action="store_true",
+                        help="配合 --topic-article 使用：直接将整篇文稿作为口播文稿，不经过 LLM 转换")
     parser.add_argument("--generate", action="store_true",
                         help="先调用 ai-daily 生成日报，再生成视频（一键模式）")
     parser.add_argument("--report-path", type=str, help="日报 txt 文件路径")
@@ -152,6 +163,51 @@ def main() -> None:
 
         print(f"\n{'=' * 60}")
         print(f"  阶段 2：生成口播视频（话题模式）")
+        print(f"{'=' * 60}\n")
+
+        cmd = [sys.executable, str(MAIN_SCRIPT), "--script-json", str(script_json_path)]
+        if args.voice:
+            cmd += ["--voice", args.voice]
+        if args.rate:
+            cmd += ["--rate", args.rate]
+        if args.output:
+            cmd += ["--output", args.output]
+        if args.config:
+            cmd += ["--config", args.config]
+
+        result = subprocess.run(cmd, encoding="utf-8", errors="replace")
+        sys.exit(result.returncode)
+
+    elif args.topic_article:
+        # 读取文稿：判断是文件路径还是直接文本
+        article_path = Path(args.topic_article)
+        if article_path.exists() and article_path.is_file():
+            print(f"  从文件读取文稿: {article_path}")
+            article_text = article_path.read_text(encoding="utf-8")
+        else:
+            article_text = args.topic_article
+
+        print(f"\n{'=' * 60}")
+        print(f"  阶段 1：处理文稿（{len(article_text)} 字）")
+        print(f"{'=' * 60}\n")
+        print(f"  文稿前 200 字预览:\n  {article_text[:200].replace(chr(10), chr(10) + '  ')}\n")
+
+        from src.script_generator import ScriptGenerator
+        gen = ScriptGenerator(args.config)
+
+        if args.not_convert:
+            script_data = gen.text_to_script(article_text)
+        else:
+            script_data = gen.generate_from_article(article_text)
+
+        script_json_path = Path("output") / f"script_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        script_json_path.parent.mkdir(parents=True, exist_ok=True)
+        import json
+        script_json_path.write_text(json.dumps(script_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"  文稿 JSON: {script_json_path}")
+
+        print(f"\n{'=' * 60}")
+        print(f"  阶段 2：生成口播视频（文稿模式）")
         print(f"{'=' * 60}\n")
 
         cmd = [sys.executable, str(MAIN_SCRIPT), "--script-json", str(script_json_path)]
