@@ -243,16 +243,22 @@ def _run_topic_pipeline(args, config: dict):
     print("【第 4 步】视频合成（话题模式）")
     print("=" * 50)
 
-    intro_video = config.get("video", {}).get("intro_video", "")
-    if intro_video and not os.path.isabs(intro_video):
-        intro_video = os.path.abspath(intro_video)
-    if not intro_video or not os.path.exists(intro_video):
-        print(f"  [警告] 片头视频不存在: {intro_video}，跳过片头")
-        intro_video = None
+    from src.intro import resolve_intro_path
+
+    try:
+        intro_path = resolve_intro_path(getattr(args, "intro", None), args.config)
+    except ValueError as e:
+        raise SystemExit(f"[错误] {e}") from e
+
+    intro_video = str(intro_path) if intro_path else None
+    if not intro_video:
+        print("  [警告] 未配置或找不到片头视频，跳过片头")
         intro_duration = 0.0
 
     if intro_video and intro_duration > 0:
         intro_video_duration = composer.get_audio_duration(intro_video)
+        print(f"  片头文件: {intro_video}")
+        print(f"  片头视频时长: {intro_video_duration:.1f}s")
         if intro_duration > intro_video_duration:
             overflow = intro_duration - intro_video_duration
             print(f"  片头口播 ({intro_duration:.1f}s) 超过片头视频 ({intro_video_duration:.1f}s)，"
@@ -261,9 +267,12 @@ def _run_topic_pipeline(args, config: dict):
             if slide_durations:
                 slide_durations[0] += overflow
 
-    from datetime import datetime
-    now = datetime.now()
-    title_text = f"{now.year}.{now.month}.{now.day}\\n热点资讯"
+    from src.genre import DEFAULT_GENRE, format_intro_title, resolve_genre
+
+    genre = resolve_genre(getattr(args, "genre", None) or script_data.get("genre") or DEFAULT_GENRE)
+    title_text = format_intro_title(genre, script_data.get("title"))
+    print(f"  节目形态: {genre.id} ({genre.display_name})")
+    print(f"  片头标题: {title_text.replace(chr(92) + 'n', ' / ')}")
 
     output_path = composer.compose_topic_video(
         bg_paths=bg_paths,
@@ -297,7 +306,29 @@ def main():
     parser.add_argument("--rate", type=str, help="TTS 语速（如 +10%%, -10%%）")
     parser.add_argument("--no-avatar", action="store_true", help="跳过数字人渲染（无需 Blender）")
     parser.add_argument("--config", type=str, default="config.yaml", help="配置文件路径")
+    parser.add_argument(
+        "--genre", type=str, default=None,
+        help="话题模式节目形态：daily_brief（默认，热点资讯）或 general（通用，片头用脚本标题）",
+    )
+    parser.add_argument(
+        "--intro", type=str, default=None,
+        help="片头文件名（位于 asset/templates/started/，可省略 .mp4）；默认用 config.video.intro_video",
+    )
     args = parser.parse_args()
+
+    if args.genre:
+        from src.genre import resolve_genre
+        try:
+            resolve_genre(args.genre)
+        except ValueError as e:
+            parser.error(str(e))
+
+    if args.intro:
+        from src.intro import resolve_intro_path
+        try:
+            resolve_intro_path(args.intro, args.config)
+        except ValueError as e:
+            parser.error(str(e))
 
     config = load_config(args.config)
 

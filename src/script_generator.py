@@ -1,7 +1,7 @@
 """
 分块口播文稿生成模块
 
-根据话题搜索资讯，调用 LLM 生成约 2 分钟的结构化口播文稿。
+根据话题搜索资讯，调用 LLM 生成结构化口播文稿。
 输出 JSON 格式，包含 chapters → blocks（每块有 keyword + narration）。
 """
 
@@ -12,33 +12,23 @@ import re
 import yaml
 from openai import OpenAI
 
+from src.genre import DEFAULT_GENRE, resolve_genre
 from src.topic_searcher import TopicSearcher
 
-
-ENDINGS = [
-    "每天两分钟，关注我，我们下期见！",
-    "关注我，培养一个每天了解时事热点的微习惯。",
-    "每天花两分钟跟我看看世界在发生什么，咱们下期不见不散。",
-    "每天两分钟，帮助你了解一天大事，我们下期再见。",
-    "关注我，养成每天快速了解时事的习惯，下期见。",
-    "今天先到这，后续的事看后续，我们下期见。",
-    "每天两分钟了解热点大事，觉得有帮助关注支持下吧，下期见！",
-    "关注我，每天花两分钟就能跟上世界的节奏，咱们下期见。",
-    "今天就聊到这，点个关注不迷路，我们下期接着唠。",
-    "每天两分钟了解大事，关注我培养看新闻的好习惯，下期见！",
-    "关注我，每天两分钟帮你把握时事脉搏，咱们下期见。",
-    "干货都给了，关注我不错过下期精彩，我们下期见。",
-]
+# 中文口播语速粗估：字/秒（与摘要预估一致）
+CHARS_PER_SEC = 4.5
+DEFAULT_DURATION_MIN = 2.0
+DEFAULT_OPENING_SEC = 8.0
 
 
 SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，擅长用生动有力的语言讲述新闻热点。
-请根据以下资讯素材，撰写一篇关于「{topic}」的 2 分钟口播文稿。
+请根据以下资讯素材，撰写一篇关于「{topic}」的口播文稿。
 
 严格要求：
-1. 总时长约 2 分钟（中文约 500-600 字，包含 opening + 所有 block narration 的总字数）
-2. 必须包含 opening（开场概括）：用 1-2 句话点出今天的核心话题，简洁有力，约 20-30 字（朗读不超过 8 秒）
-3. 正文分为 2-3 个章节（chapter），每个章节聚焦一个子话题并有深度
-4. 每个章节包含 2-4 个内容块（block）
+1. 总时长约 {duration_min:g} 分钟（中文约 {char_lo}-{char_hi} 字，包含 opening + 所有 block narration 的总字数）
+2. 必须包含 opening（开场概括）：点出核心话题；朗读时长约 {opening_sec:.0f} 秒（约 {opening_char_lo}-{opening_char_hi} 字），尽量贴近片头视频时长且不要明显超过
+3. 正文分为 {chapter_range} 个章节（chapter），每个章节聚焦一个子话题并有深度
+4. 每个章节包含 {blocks_per_chapter} 个内容块（block）
 5. 每个 block 的 narration 包含 2-3 个分句，朗读时长约 4-8 秒（约 30-60 字）
 6. 每个 block 必须有一个 keyword（英文，用于搜索配图，描述该段核心画面）
 7. keyword 要具体、可视化，能搜索到有意义的图片（如 "nvidia gpu server rack" 而非 "technology"）
@@ -50,14 +40,14 @@ SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，擅长用�
 - 口语化但不随意，像一个专业主播在和观众对话
 - 适当使用短句增强节奏感，关键数据要突出
 - 每个章节之间有逻辑递进（现象→原因→影响 或 事件→分析→展望）
-
+{style_extra}
 资讯素材：
 {materials}
 
 请严格按以下 JSON 格式输出：
 {{
   "title": "视频主题标题",
-  "opening": "1-2句话点题，约20-30字",
+  "opening": "开场点题，字数匹配片头时长",
   "chapters": [
     {{
       "chapter_title": "章节标题",
@@ -77,10 +67,10 @@ ARTICLE_SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，�
 请根据以下整篇文稿，将其改写为一篇适合短视频口播的文稿。
 
 严格要求：
-1. 保留原文的核心信息和逻辑脉络，但用更口语化、更有节奏感的方式重新组织
-2. 必须包含 opening（开场概括）：用 1-2 句话点出今天的核心话题，简洁有力，约 20-30 字（朗读不超过 8 秒）
-3. 正文分为 2-3 个章节（chapter），每个章节聚焦一个子话题并有深度
-4. 每个章节包含 2-4 个内容块（block）
+1. 保留原文的核心信息和逻辑脉络，但用更口语化、更有节奏感的方式重新组织；总时长约 {duration_min:g} 分钟（约 {char_lo}-{char_hi} 字，含 opening + 全部 narration）
+2. 必须包含 opening（开场概括）：点出核心话题；朗读时长约 {opening_sec:.0f} 秒（约 {opening_char_lo}-{opening_char_hi} 字），尽量贴近片头视频时长且不要明显超过
+3. 正文分为 {chapter_range} 个章节（chapter），每个章节聚焦一个子话题并有深度
+4. 每个章节包含 {blocks_per_chapter} 个内容块（block）
 5. 每个 block 的 narration 包含 2-3 个分句，朗读时长约 4-8 秒（约 30-60 字）
 6. 每个 block 必须有一个 keyword（英文，用于搜索配图，描述该段核心画面）
 7. keyword 要具体、可视化，能搜索到有意义的图片（如 "nvidia gpu server rack" 而非 "technology"）
@@ -92,14 +82,14 @@ ARTICLE_SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，�
 - 口语化但不随意，像一个专业主播在和观众对话
 - 适当使用短句增强节奏感，关键数据要突出
 - 每个章节之间有逻辑递进（现象→原因→影响 或 事件→分析→展望）
-
+{style_extra}
 原文文稿：
 {article}
 
 请严格按以下 JSON 格式输出：
 {{
   "title": "视频主题标题",
-  "opening": "1-2句话点题，约20-30字",
+  "opening": "开场点题，字数匹配片头时长",
   "chapters": [
     {{
       "chapter_title": "章节标题",
@@ -149,8 +139,50 @@ TEXT_TO_SCRIPT_PROMPT = """你是一个专业的短视频文稿编辑。
 """
 
 
+def build_duration_plan(
+    duration_min: float,
+    opening_sec: float = DEFAULT_OPENING_SEC,
+) -> dict:
+    """由目标分钟数与片头时长，生成写入 prompt 的结构/字数引导。"""
+    duration_min = max(float(duration_min), 0.5)
+    opening_sec = max(float(opening_sec), 3.0)
+
+    total_sec = duration_min * 60
+    target_chars = int(total_sec * CHARS_PER_SEC)
+    char_lo = max(80, int(target_chars * 0.9))
+    char_hi = int(target_chars * 1.1)
+
+    if duration_min <= 1.0:
+        chapter_range, blocks_per_chapter = "1-2", "2-3"
+    elif duration_min <= 2.0:
+        chapter_range, blocks_per_chapter = "2-3", "2-4"
+    else:
+        chapter_range, blocks_per_chapter = "3", "3-4"
+
+    opening_chars = max(15, int(opening_sec * CHARS_PER_SEC))
+    opening_char_lo = max(12, int(opening_chars * 0.85))
+    opening_char_hi = max(opening_char_lo + 1, int(opening_chars * 1.1))
+
+    return {
+        "duration_min": duration_min,
+        "char_lo": char_lo,
+        "char_hi": char_hi,
+        "chapter_range": chapter_range,
+        "blocks_per_chapter": blocks_per_chapter,
+        "opening_sec": opening_sec,
+        "opening_char_lo": opening_char_lo,
+        "opening_char_hi": opening_char_hi,
+    }
+
+
 class ScriptGenerator:
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(
+        self,
+        config_path: str = "config.yaml",
+        genre: str | None = None,
+        duration_min: float = DEFAULT_DURATION_MIN,
+        opening_sec: float | None = None,
+    ):
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
@@ -158,11 +190,25 @@ class ScriptGenerator:
         self.client = OpenAI(api_key=ds_cfg["api_key"], base_url=ds_cfg["base_url"])
         self.model = ds_cfg.get("model", "deepseek-chat")
         self.config_path = config_path
+        self.genre = resolve_genre(genre or DEFAULT_GENRE)
+        self.duration_min = float(duration_min) if duration_min else DEFAULT_DURATION_MIN
+        self.opening_sec = float(opening_sec) if opening_sec else DEFAULT_OPENING_SEC
+        self.plan = build_duration_plan(self.duration_min, self.opening_sec)
+
+    def _style_extra(self) -> str:
+        tone = (self.genre.script_tone or "").strip()
+        return f"{tone}\n" if tone else ""
+
+    def _prompt_kwargs(self) -> dict:
+        return {**self.plan, "style_extra": self._style_extra()}
 
     def generate(self, topic: str) -> dict:
         """搜索话题资讯并生成结构化口播文稿。"""
         print(f"\n{'=' * 60}")
         print(f"  生成分块口播文稿：{topic}")
+        print(f"  节目形态: {self.genre.id} ({self.genre.display_name})")
+        print(f"  目标时长: {self.duration_min:g} min（约 {self.plan['char_lo']}-{self.plan['char_hi']} 字）")
+        print(f"  开场白:   约 {self.opening_sec:.0f}s（对齐片头）")
         print(f"{'=' * 60}\n")
 
         searcher = TopicSearcher(self.config_path)
@@ -175,7 +221,9 @@ class ScriptGenerator:
             materials += f"[{i}] {r['title']}\n   {r['body']}\n\n"
 
         print("  调用 LLM 生成分块文稿...")
-        prompt = SCRIPT_PROMPT.format(topic=topic, materials=materials)
+        prompt = SCRIPT_PROMPT.format(
+            topic=topic, materials=materials, **self._prompt_kwargs()
+        )
 
         response = self.client.chat.completions.create(
             model=self.model,
@@ -188,6 +236,8 @@ class ScriptGenerator:
 
         raw = response.choices[0].message.content.strip()
         script_data = self._parse_response(raw)
+        script_data["genre"] = self.genre.id
+        script_data["duration_min"] = self.duration_min
         self._append_ending(script_data)
         self._print_summary(script_data)
         return script_data
@@ -196,9 +246,14 @@ class ScriptGenerator:
         """根据整篇文稿文本生成结构化口播文稿（不搜索资讯）。"""
         print(f"\n{'=' * 60}")
         print(f"  根据文稿生成口播文稿")
+        print(f"  节目形态: {self.genre.id} ({self.genre.display_name})")
+        print(f"  目标时长: {self.duration_min:g} min（约 {self.plan['char_lo']}-{self.plan['char_hi']} 字）")
+        print(f"  开场白:   约 {self.opening_sec:.0f}s（对齐片头）")
         print(f"{'=' * 60}\n")
 
-        prompt = ARTICLE_SCRIPT_PROMPT.format(article=article_text)
+        prompt = ARTICLE_SCRIPT_PROMPT.format(
+            article=article_text, **self._prompt_kwargs()
+        )
 
         print("  调用 LLM 转换文稿为分块口播...")
         response = self.client.chat.completions.create(
@@ -212,6 +267,8 @@ class ScriptGenerator:
 
         raw = response.choices[0].message.content.strip()
         script_data = self._parse_response(raw)
+        script_data["genre"] = self.genre.id
+        script_data["duration_min"] = self.duration_min
         self._append_ending(script_data)
         self._print_summary(script_data)
         return script_data
@@ -224,6 +281,7 @@ class ScriptGenerator:
         """
         print(f"\n{'=' * 60}")
         print(f"  原文分块 + 生成关键词（保留原文不改写）")
+        print(f"  [提示] --not-convert 不改写原文，--duration 不生效")
         print(f"{'=' * 60}\n")
 
         prompt = TEXT_TO_SCRIPT_PROMPT.format(article=article_text.strip())
@@ -262,7 +320,7 @@ class ScriptGenerator:
 
     def _append_ending(self, data: dict):
         """在最后一个章节末尾追加预设结束语 block。"""
-        ending = random.choice(ENDINGS)
+        ending = random.choice(self.genre.endings)
         ending_block = {"keyword": "subscribe button", "narration": ending}
         data["chapters"][-1]["blocks"].append(ending_block)
 
@@ -275,9 +333,11 @@ class ScriptGenerator:
                 total_chars += len(block["narration"])
                 total_blocks += 1
 
-        estimated_duration = total_chars / 4.5
+        estimated_duration = total_chars / CHARS_PER_SEC
+        opening_chars = len(data.get("opening", ""))
+        opening_est = opening_chars / CHARS_PER_SEC
         print(f"\n  标题: {data['title']}")
-        print(f"  开场: {data.get('opening', '')[:40]}...")
+        print(f"  开场: {data.get('opening', '')[:40]}...（{opening_chars} 字 / ~{opening_est:.0f}s）")
         print(f"  章节: {len(data['chapters'])} 个")
         print(f"  内容块: {total_blocks} 个")
         print(f"  总字数: {total_chars} 字")

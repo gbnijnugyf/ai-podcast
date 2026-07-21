@@ -36,6 +36,12 @@
   # 跳过数字人渲染（无需 Blender，仅生成 PPT+语音视频）
   python generate_video_from_report.py --generate --no-avatar
 
+  # 通用节目形态（片头用话题/脚本标题，非「热点资讯」）
+  python generate_video_from_report.py --topic "量子计算" --genre general
+
+  # 指定时长（分钟）与片头（started/ 下文件名）
+  python generate_video_from_report.py --topic "量子计算" --genre general --duration 1 --intro 通用片头
+
   # 使用已有幻灯片图片
   python main.py --slides-dir output/slides --no-avatar
 
@@ -44,6 +50,7 @@
 """
 
 import argparse
+import json
 import subprocess
 import sys
 from datetime import datetime
@@ -100,6 +107,42 @@ def resolve_report_path(date_str: str | None, explicit_path: str | None) -> Path
     return p
 
 
+def _make_script_generator(args):
+    """按 CLI 解析片头时长，构造 ScriptGenerator（开场白对齐片头）。"""
+    from src.intro import opening_sec_for_intro
+    from src.script_generator import ScriptGenerator
+
+    intro_path, opening_sec = opening_sec_for_intro(args.intro, args.config)
+    if intro_path:
+        print(f"  片头: {intro_path.name}（{opening_sec:.1f}s，开场白按此时长引导）")
+    else:
+        print(f"  片头: 未找到，开场白按默认 {opening_sec:.0f}s 引导")
+
+    return ScriptGenerator(
+        args.config,
+        genre=args.genre,
+        duration_min=args.duration,
+        opening_sec=opening_sec,
+    )
+
+
+def _topic_main_cmd(script_json_path: Path, args) -> list[str]:
+    cmd = [sys.executable, str(MAIN_SCRIPT), "--script-json", str(script_json_path)]
+    if args.voice:
+        cmd += ["--voice", args.voice]
+    if args.rate:
+        cmd += ["--rate", args.rate]
+    if args.output:
+        cmd += ["--output", args.output]
+    if args.config:
+        cmd += ["--config", args.config]
+    if args.genre:
+        cmd += ["--genre", args.genre]
+    if args.intro:
+        cmd += ["--intro", args.intro]
+    return cmd
+
+
 def generate_from_topic(topic: str, config_path: str) -> Path:
     """搜索指定主题的最新资讯并整理为口播文稿，返回临时文件路径。"""
     from src.topic_searcher import TopicSearcher
@@ -139,7 +182,33 @@ def main() -> None:
     parser.add_argument("--output", type=str, default=None, help="输出视频路径")
     parser.add_argument("--no-avatar", action="store_true", help="跳过数字人渲染（无需 Blender）")
     parser.add_argument("--config", type=str, default="config.yaml", help="配置文件路径")
+    parser.add_argument(
+        "--genre", type=str, default="daily_brief",
+        help="话题/文稿模式节目形态：daily_brief（默认）或 general",
+    )
+    parser.add_argument(
+        "--duration", type=float, default=2.0,
+        help="口播目标时长（分钟），默认 2；影响文案字数/结构引导",
+    )
+    parser.add_argument(
+        "--intro", type=str, default=None,
+        help="片头文件名（asset/templates/started/ 下，可省略 .mp4）；默认用 config",
+    )
     args = parser.parse_args()
+
+    from src.genre import resolve_genre
+    from src.intro import resolve_intro_path
+    try:
+        resolve_genre(args.genre)
+    except ValueError as e:
+        parser.error(str(e))
+    if args.duration <= 0:
+        parser.error("--duration 必须为正数（单位：分钟）")
+    if args.intro:
+        try:
+            resolve_intro_path(args.intro, args.config)
+        except ValueError as e:
+            parser.error(str(e))
 
     if args.topic:
         if args.topic == "__auto__":
@@ -151,13 +220,11 @@ def main() -> None:
         else:
             topic = args.topic
 
-        from src.script_generator import ScriptGenerator
-        gen = ScriptGenerator(args.config)
+        gen = _make_script_generator(args)
         script_data = gen.generate(topic)
 
         script_json_path = Path("output") / f"script_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         script_json_path.parent.mkdir(parents=True, exist_ok=True)
-        import json
         script_json_path.write_text(json.dumps(script_data, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"  文稿 JSON: {script_json_path}")
 
@@ -165,17 +232,11 @@ def main() -> None:
         print(f"  阶段 2：生成口播视频（话题模式）")
         print(f"{'=' * 60}\n")
 
-        cmd = [sys.executable, str(MAIN_SCRIPT), "--script-json", str(script_json_path)]
-        if args.voice:
-            cmd += ["--voice", args.voice]
-        if args.rate:
-            cmd += ["--rate", args.rate]
-        if args.output:
-            cmd += ["--output", args.output]
-        if args.config:
-            cmd += ["--config", args.config]
-
-        result = subprocess.run(cmd, encoding="utf-8", errors="replace")
+        result = subprocess.run(
+            _topic_main_cmd(script_json_path, args),
+            encoding="utf-8",
+            errors="replace",
+        )
         sys.exit(result.returncode)
 
     elif args.topic_article:
@@ -192,17 +253,16 @@ def main() -> None:
         print(f"{'=' * 60}\n")
         print(f"  文稿前 200 字预览:\n  {article_text[:200].replace(chr(10), chr(10) + '  ')}\n")
 
-        from src.script_generator import ScriptGenerator
-        gen = ScriptGenerator(args.config)
+        gen = _make_script_generator(args)
 
         if args.not_convert:
             script_data = gen.text_to_script(article_text)
+            script_data["genre"] = args.genre
         else:
             script_data = gen.generate_from_article(article_text)
 
         script_json_path = Path("output") / f"script_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         script_json_path.parent.mkdir(parents=True, exist_ok=True)
-        import json
         script_json_path.write_text(json.dumps(script_data, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"  文稿 JSON: {script_json_path}")
 
@@ -210,17 +270,11 @@ def main() -> None:
         print(f"  阶段 2：生成口播视频（文稿模式）")
         print(f"{'=' * 60}\n")
 
-        cmd = [sys.executable, str(MAIN_SCRIPT), "--script-json", str(script_json_path)]
-        if args.voice:
-            cmd += ["--voice", args.voice]
-        if args.rate:
-            cmd += ["--rate", args.rate]
-        if args.output:
-            cmd += ["--output", args.output]
-        if args.config:
-            cmd += ["--config", args.config]
-
-        result = subprocess.run(cmd, encoding="utf-8", errors="replace")
+        result = subprocess.run(
+            _topic_main_cmd(script_json_path, args),
+            encoding="utf-8",
+            errors="replace",
+        )
         sys.exit(result.returncode)
 
     elif args.generate:

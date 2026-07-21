@@ -10,6 +10,10 @@
 
   python batch_generate.py --topics-file topics.txt --no-avatar --max-workers 3
 
+  python batch_generate.py --topics-file topics.txt --genre general
+
+  python batch_generate.py --topics-file topics.txt --genre general --duration 1 --intro 通用片头
+
 topics.txt 文件格式（每行一个 topic，空行和 # 开头的行会被忽略）：
   AI大模型最新进展
   量子计算突破
@@ -162,6 +166,12 @@ def build_pass_through_args(args) -> list[str]:
         extra += ["--rate", args.rate]
     if args.no_avatar:
         extra += ["--no-avatar"]
+    if args.genre:
+        extra += ["--genre", args.genre]
+    if args.duration is not None:
+        extra += ["--duration", str(args.duration)]
+    if args.intro:
+        extra += ["--intro", args.intro]
     return extra
 
 
@@ -189,10 +199,31 @@ def main() -> None:
                         help="TTS 语速，如 +10%%（透传）")
     parser.add_argument("--no-avatar", action="store_true",
                         help="跳过数字人渲染（透传）")
+    parser.add_argument("--genre", type=str, default="daily_brief",
+                        help="节目形态（透传）：daily_brief（默认）或 general")
+    parser.add_argument("--duration", type=float, default=2.0,
+                        help="口播目标时长（分钟，透传），默认 2")
+    parser.add_argument("--intro", type=str, default=None,
+                        help="片头文件名（透传，asset/templates/started/ 下）")
     parser.add_argument("--config", type=str, default="config.yaml",
                         help="基准配置文件路径，默认 config.yaml（LLM/Blender 等配置来源）")
 
     args = parser.parse_args()
+
+    from src.genre import resolve_genre
+    from src.intro import resolve_intro_path
+    try:
+        resolve_genre(args.genre)
+    except ValueError as e:
+        parser.error(str(e))
+    if args.duration <= 0:
+        parser.error("--duration 必须为正数（单位：分钟）")
+    if args.intro:
+        try:
+            resolve_intro_path(args.intro, args.config)
+        except ValueError as e:
+            parser.error(str(e))
+
     topics = read_topics(args.topics_file)
     extra_args = build_pass_through_args(args)
 
@@ -213,6 +244,10 @@ def main() -> None:
         print(f"  语速:      {args.rate}")
     if args.no_avatar:
         print(f"  模式:      无数字人")
+    print(f"  节目形态:  {args.genre}")
+    print(f"  目标时长:  {args.duration:g} min")
+    if args.intro:
+        print(f"  片头:      {args.intro}")
     print(f"{'=' * 60}\n")
 
     for i, t in enumerate(topics, 1):
