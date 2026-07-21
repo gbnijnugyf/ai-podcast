@@ -6,6 +6,7 @@
 """
 
 import json
+import math
 import random
 import re
 
@@ -20,13 +21,19 @@ CHARS_PER_SEC = 4.5
 DEFAULT_DURATION_MIN = 2.0
 DEFAULT_OPENING_SEC = 8.0
 
+# 每块字数区间固定；时长靠增加章节数/块数达成
+BLOCK_CHAR_LO = 30
+BLOCK_CHAR_HI = 60
+BLOCK_CHAR_MID = (BLOCK_CHAR_LO + BLOCK_CHAR_HI) // 2
+ENDING_CHAR_RESERVE = 40
+
 
 SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，擅长用生动有力的语言讲述新闻热点。
-请根据以下资讯素材，撰写一篇关于「{topic}」的口播文稿。
+请根据以下资讯素材，撰写一篇关于「{topic}」的 {duration_min:g} 分钟口播文稿。
 
 严格要求：
 1. 总时长约 {duration_min:g} 分钟（中文约 {char_lo}-{char_hi} 字，包含 opening + 所有 block narration 的总字数）
-2. 必须包含 opening（开场概括）：点出核心话题；朗读时长约 {opening_sec:.0f} 秒（约 {opening_char_lo}-{opening_char_hi} 字），尽量贴近片头视频时长且不要明显超过
+2. 必须包含 opening（开场概括）：用 1-2 句话点出今天的核心话题，简洁有力，约 {opening_char_lo}-{opening_char_hi} 字（朗读不超过 {opening_sec:.0f} 秒）
 3. 正文分为 {chapter_range} 个章节（chapter），每个章节聚焦一个子话题并有深度
 4. 每个章节包含 {blocks_per_chapter} 个内容块（block）
 5. 每个 block 的 narration 包含 2-3 个分句，朗读时长约 4-8 秒（约 30-60 字）
@@ -47,7 +54,7 @@ SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，擅长用�
 请严格按以下 JSON 格式输出：
 {{
   "title": "视频主题标题",
-  "opening": "开场点题，字数匹配片头时长",
+  "opening": "1-2句话点题，约20-30字",
   "chapters": [
     {{
       "chapter_title": "章节标题",
@@ -67,8 +74,8 @@ ARTICLE_SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，�
 请根据以下整篇文稿，将其改写为一篇适合短视频口播的文稿。
 
 严格要求：
-1. 保留原文的核心信息和逻辑脉络，但用更口语化、更有节奏感的方式重新组织；总时长约 {duration_min:g} 分钟（约 {char_lo}-{char_hi} 字，含 opening + 全部 narration）
-2. 必须包含 opening（开场概括）：点出核心话题；朗读时长约 {opening_sec:.0f} 秒（约 {opening_char_lo}-{opening_char_hi} 字），尽量贴近片头视频时长且不要明显超过
+1. 保留原文的核心信息和逻辑脉络，但用更口语化、更有节奏感的方式重新组织；总时长约 {duration_min:g} 分钟（中文约 {char_lo}-{char_hi} 字，包含 opening + 所有 block narration 的总字数）
+2. 必须包含 opening（开场概括）：用 1-2 句话点出今天的核心话题，简洁有力，约 {opening_char_lo}-{opening_char_hi} 字（朗读不超过 {opening_sec:.0f} 秒）
 3. 正文分为 {chapter_range} 个章节（chapter），每个章节聚焦一个子话题并有深度
 4. 每个章节包含 {blocks_per_chapter} 个内容块（block）
 5. 每个 block 的 narration 包含 2-3 个分句，朗读时长约 4-8 秒（约 30-60 字）
@@ -89,7 +96,7 @@ ARTICLE_SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，�
 请严格按以下 JSON 格式输出：
 {{
   "title": "视频主题标题",
-  "opening": "开场点题，字数匹配片头时长",
+  "opening": "1-2句话点题，约20-30字",
   "chapters": [
     {{
       "chapter_title": "章节标题",
@@ -143,7 +150,11 @@ def build_duration_plan(
     duration_min: float,
     opening_sec: float = DEFAULT_OPENING_SEC,
 ) -> dict:
-    """由目标分钟数与片头时长，生成写入 prompt 的结构/字数引导。"""
+    """由目标分钟数与片头时长，生成写入 prompt 的结构/字数引导。
+
+    每块字数固定为 BLOCK_CHAR_LO–BLOCK_CHAR_HI；通过增加章节数与每章块数，
+    保证结构上限容量 >= char_hi，避免总字数目标与结构互相矛盾。
+    """
     duration_min = max(float(duration_min), 0.5)
     opening_sec = max(float(opening_sec), 3.0)
 
@@ -152,16 +163,42 @@ def build_duration_plan(
     char_lo = max(80, int(target_chars * 0.9))
     char_hi = int(target_chars * 1.1)
 
-    if duration_min <= 1.0:
-        chapter_range, blocks_per_chapter = "1-2", "2-3"
-    elif duration_min <= 2.0:
-        chapter_range, blocks_per_chapter = "2-3", "2-4"
-    else:
-        chapter_range, blocks_per_chapter = "3", "3-4"
-
     opening_chars = max(15, int(opening_sec * CHARS_PER_SEC))
     opening_char_lo = max(12, int(opening_chars * 0.85))
     opening_char_hi = max(opening_char_lo + 1, int(opening_chars * 1.1))
+
+    body_hi = max(60, char_hi - opening_char_hi - ENDING_CHAR_RESERVE)
+    body_lo = max(60, char_lo - opening_char_hi - ENDING_CHAR_RESERVE)
+    # 按块上限凑满 char_hi；按块中位凑满 char_lo —— 取更大者作为目标块数
+    blocks_for_hi = math.ceil(body_hi / BLOCK_CHAR_HI)
+    blocks_for_lo = math.ceil(body_lo / BLOCK_CHAR_MID)
+    target_blocks = max(blocks_for_hi, blocks_for_lo, 4)
+
+    ideal_bpc = 4 if target_blocks <= 16 else 5
+    max_chapters = 6 if duration_min <= 4 else 8
+    chapters = max(1, min(max_chapters, math.ceil(target_blocks / ideal_bpc)))
+    blocks_per = max(2, math.ceil(target_blocks / chapters))
+
+    # 结构上限必须盖住 char_hi
+    while chapters * blocks_per * BLOCK_CHAR_HI < body_hi:
+        if blocks_per < 8:
+            blocks_per += 1
+        else:
+            chapters += 1
+
+    chapter_lo = max(1, chapters - 1) if chapters > 1 else 1
+    chapter_hi = chapters
+    blocks_lo = max(2, blocks_per - 1)
+    blocks_hi = blocks_per
+    while chapter_hi * blocks_hi * BLOCK_CHAR_HI < body_hi:
+        blocks_hi += 1
+
+    chapter_range = (
+        str(chapter_hi) if chapter_lo == chapter_hi else f"{chapter_lo}-{chapter_hi}"
+    )
+    blocks_per_chapter = (
+        str(blocks_hi) if blocks_lo == blocks_hi else f"{blocks_lo}-{blocks_hi}"
+    )
 
     return {
         "duration_min": duration_min,
@@ -169,6 +206,10 @@ def build_duration_plan(
         "char_hi": char_hi,
         "chapter_range": chapter_range,
         "blocks_per_chapter": blocks_per_chapter,
+        "target_blocks": target_blocks,
+        "max_capacity_chars": (
+            opening_char_hi + chapter_hi * blocks_hi * BLOCK_CHAR_HI
+        ),
         "opening_sec": opening_sec,
         "opening_char_lo": opening_char_lo,
         "opening_char_hi": opening_char_hi,
@@ -208,6 +249,8 @@ class ScriptGenerator:
         print(f"  生成分块口播文稿：{topic}")
         print(f"  节目形态: {self.genre.id} ({self.genre.display_name})")
         print(f"  目标时长: {self.duration_min:g} min（约 {self.plan['char_lo']}-{self.plan['char_hi']} 字）")
+        print(f"  结构引导: {self.plan['chapter_range']} 章 × 每章 {self.plan['blocks_per_chapter']} 块"
+              f"（每块 {BLOCK_CHAR_LO}-{BLOCK_CHAR_HI} 字，容量上限约 {self.plan['max_capacity_chars']} 字）")
         print(f"  开场白:   约 {self.opening_sec:.0f}s（对齐片头）")
         print(f"{'=' * 60}\n")
 
@@ -248,6 +291,8 @@ class ScriptGenerator:
         print(f"  根据文稿生成口播文稿")
         print(f"  节目形态: {self.genre.id} ({self.genre.display_name})")
         print(f"  目标时长: {self.duration_min:g} min（约 {self.plan['char_lo']}-{self.plan['char_hi']} 字）")
+        print(f"  结构引导: {self.plan['chapter_range']} 章 × 每章 {self.plan['blocks_per_chapter']} 块"
+              f"（每块 {BLOCK_CHAR_LO}-{BLOCK_CHAR_HI} 字，容量上限约 {self.plan['max_capacity_chars']} 字）")
         print(f"  开场白:   约 {self.opening_sec:.0f}s（对齐片头）")
         print(f"{'=' * 60}\n")
 
