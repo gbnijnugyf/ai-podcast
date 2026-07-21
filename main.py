@@ -285,6 +285,8 @@ def _run_topic_pipeline(args, config: dict):
         title_text=title_text,
     )
 
+    tts.clear_cache()
+
     elapsed = time.time() - start_time
     print("\n" + "=" * 50)
     print(f"完成！总用时: {elapsed:.1f}s")
@@ -297,7 +299,7 @@ def main():
     parser.add_argument("--text", type=str, help="讲解文本内容")
     parser.add_argument("--text-file", type=str, help="从文件读取讲解文本")
     parser.add_argument("--script-json", type=str, help="话题模式：结构化口播文稿 JSON 文件路径")
-    parser.add_argument("--bg-dir", type=str, help="话题模式：已有背景图目录（跳过图片下载，从 TTS 阶段继续）")
+    parser.add_argument("--bg-dir", type=str, help="话题模式：已有背景图目录（跳过图片下载；TTS 有缓存则按页续跑）")
     parser.add_argument("--slides-dir", type=str, help="已有幻灯片图片目录（跳过自动生成）")
     parser.add_argument("--model", type=str, default="asset/swat.fbx", help="3D 模型路径")
     parser.add_argument("--anim", type=str, default="asset/animations", help="动画 FBX 文件或目录路径")
@@ -491,6 +493,8 @@ def main():
             srt_path=srt_path,
             all_frame_dirs=all_frame_dirs,
         )
+
+    tts.clear_cache()
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 50)

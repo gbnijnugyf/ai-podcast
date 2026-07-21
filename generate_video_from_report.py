@@ -15,7 +15,7 @@
   # 整篇文稿直接作为口播文稿（不经过 LLM 转换）
   python generate_video_from_report.py --topic-article path/to/article.txt --not-convert
 
-  # 指定主题tts步骤重启
+  # 指定主题从 TTS 阶段重启（有 TTS 缓存则按页续跑，跳过已合成页）
   python main.py --script-json output/script_20260621_xxxxxx.json --bg-dir output/slides/topic_bg
 
   # 一键：抓取新闻 → 生成日报 → 生成视频
