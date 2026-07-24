@@ -42,6 +42,9 @@
   # 指定时长（分钟）与片头（started/ 下文件名）
   python generate_video_from_report.py --topic "量子计算" --genre general --duration 1 --intro 通用片头
 
+  # 最多 2 段背景使用视频（Pexels/Pixabay），其余为静图
+  python generate_video_from_report.py --topic "量子计算" --max-videos 2
+
   # 使用已有幻灯片图片
   python main.py --slides-dir output/slides --no-avatar
 
@@ -140,6 +143,8 @@ def _topic_main_cmd(script_json_path: Path, args) -> list[str]:
         cmd += ["--genre", args.genre]
     if args.intro:
         cmd += ["--intro", args.intro]
+    if args.max_videos is not None:
+        cmd += ["--max-videos", str(args.max_videos)]
     return cmd
 
 
@@ -194,6 +199,10 @@ def main() -> None:
         "--intro", type=str, default=None,
         help="片头文件名（asset/templates/started/ 下，可省略 .mp4）；默认用 config",
     )
+    parser.add_argument(
+        "--max-videos", type=int, default=None,
+        help="背景最多使用的视频段数；不传则默认 0（全部静图）",
+    )
     args = parser.parse_args()
 
     from src.genre import resolve_genre
@@ -204,6 +213,11 @@ def main() -> None:
         parser.error(str(e))
     if args.duration <= 0:
         parser.error("--duration 必须为正数（单位：分钟）")
+    # 未传 --max-videos 时固定为 0（不读配置，避免批量误开视频）
+    if args.max_videos is None:
+        args.max_videos = 0
+    elif args.max_videos < 0:
+        parser.error("--max-videos 不能为负数")
     if args.intro:
         try:
             resolve_intro_path(args.intro, args.config)

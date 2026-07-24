@@ -201,6 +201,32 @@ class VideoComposer:
             output_path,
         ], f"静态页 → 视频")
 
+    def _make_page_video_from_clip(self, clip_path: str, duration: float, output_path: str):
+        """将背景视频裁切/循环为指定时长的全屏片段（无音轨）。"""
+        vf = (
+            f"scale={1920}:{1080}:force_original_aspect_ratio=increase,"
+            f"crop={1920}:{1080},fps={self.fps}"
+        )
+        self._run_ffmpeg([
+            self.ffmpeg, "-y",
+            "-stream_loop", "-1",
+            "-i", os.path.abspath(clip_path),
+            "-t", f"{duration:.3f}",
+            "-vf", vf,
+            "-an",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            output_path,
+        ], "视频背景 → 片段")
+
+    def _make_page_from_bg(self, bg_path: str, duration: float, output_path: str):
+        """按背景文件类型生成页面视频（静图或视频循环）。"""
+        ext = os.path.splitext(bg_path)[1].lower()
+        if ext in {".mp4", ".mov", ".webm", ".mkv"}:
+            self._make_page_video_from_clip(bg_path, duration, output_path)
+        else:
+            self._make_page_video_static(bg_path, duration, output_path)
+
     def _make_page_video_with_anim(
         self, frame_paths: list[str], static_slide: str,
         total_duration: float, output_path: str,
@@ -452,7 +478,7 @@ class VideoComposer:
         intro_duration: float = 0.0,
         title_text: str | None = None,
     ) -> str:
-        """话题模式合成：片头视频 + 全屏背景图硬切 + 音频 + 白色字体红色描边字幕。"""
+        """话题模式合成：片头视频 + 全屏背景（静图/视频）硬切 + 音频 + 字幕。"""
         if output_path is None:
             output_path = os.path.join(self.output_dir, "output.mp4")
 
@@ -511,7 +537,7 @@ class VideoComposer:
         intro_duration: float = 0.0,
         title_text: str | None = None,
     ):
-        """将片头视频 + 背景图序列生成视频（硬切，无转场）。"""
+        """将片头视频 + 背景媒资序列生成视频（硬切，无转场）。"""
         if not bg_paths and not intro_video:
             raise ValueError("没有背景图片或片头视频")
 
@@ -528,7 +554,7 @@ class VideoComposer:
             page_video = os.path.join(self.output_dir, f"_topic_page_{i:03d}.mp4")
             page_videos.append(page_video)
             temp_files.append(page_video)
-            self._make_page_video_static(bg_path, dur, page_video)
+            self._make_page_from_bg(bg_path, dur, page_video)
 
         if len(page_videos) == 1:
             os.rename(page_videos[0], output_path)

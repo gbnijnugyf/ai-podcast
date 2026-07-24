@@ -163,14 +163,20 @@ def _run_topic_pipeline(args, config: dict):
         bg_files = sorted([
             os.path.join(args.bg_dir, f)
             for f in os.listdir(args.bg_dir)
-            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+            if f.lower().endswith((".jpg", ".jpeg", ".png", ".mp4", ".mov", ".webm", ".mkv"))
         ])
         bg_paths = bg_files[:len(blocks)]
-        print(f"  使用已有背景图目录: {args.bg_dir} ({len(bg_paths)} 张)")
+        print(f"  使用已有背景目录: {args.bg_dir} ({len(bg_paths)} 个)")
     else:
+        max_videos = getattr(args, "max_videos", None)
+        if max_videos is None:
+            max_videos = int((config.get("media") or {}).get("max_videos", 0) or 0)
         bg_searcher = BackgroundSearcher(args.config)
-        bg_paths = bg_searcher.download_for_script(script_data, bg_output_dir)
-        print(f"  背景图: {len(bg_paths)} 张")
+        bg_paths = bg_searcher.download_for_script(
+            script_data, bg_output_dir, max_videos=max_videos
+        )
+        n_vid = sum(1 for p in bg_paths if p.lower().endswith((".mp4", ".mov", ".webm", ".mkv")))
+        print(f"  背景媒资: {len(bg_paths)} 个（视频 {n_vid} / 图片 {len(bg_paths) - n_vid}）")
 
     # -------------------------------------------------------
     # 2. TTS 语音合成（opening + 正文 blocks）
@@ -316,7 +322,14 @@ def main():
         "--intro", type=str, default=None,
         help="片头文件名（位于 asset/templates/started/，可省略 .mp4）；默认用 config.video.intro_video",
     )
+    parser.add_argument(
+        "--max-videos", type=int, default=None,
+        help="话题背景最多使用的视频段数；不传则读 config.media.max_videos，再默认 0",
+    )
     args = parser.parse_args()
+
+    if args.max_videos is not None and args.max_videos < 0:
+        parser.error("--max-videos 不能为负数")
 
     if args.genre:
         from src.genre import resolve_genre

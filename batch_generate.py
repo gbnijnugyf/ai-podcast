@@ -14,6 +14,8 @@
 
   python batch_generate.py --topics-file topics.txt --genre general --duration 1 --intro 通用片头
 
+  python batch_generate.py --topics-file topics.txt --max-videos 2
+
 topics.txt 文件格式（每行一个 topic，空行和 # 开头的行会被忽略）：
   AI大模型最新进展
   量子计算突破
@@ -172,6 +174,8 @@ def build_pass_through_args(args) -> list[str]:
         extra += ["--duration", str(args.duration)]
     if args.intro:
         extra += ["--intro", args.intro]
+    if args.max_videos is not None:
+        extra += ["--max-videos", str(args.max_videos)]
     return extra
 
 
@@ -205,6 +209,8 @@ def main() -> None:
                         help="口播目标时长（分钟，透传），默认 2")
     parser.add_argument("--intro", type=str, default=None,
                         help="片头文件名（透传，asset/templates/started/ 下）")
+    parser.add_argument("--max-videos", type=int, default=None,
+                        help="背景最多视频段数（透传；不传则默认 0）")
     parser.add_argument("--config", type=str, default="config.yaml",
                         help="基准配置文件路径，默认 config.yaml（LLM/Blender 等配置来源）")
 
@@ -218,6 +224,10 @@ def main() -> None:
         parser.error(str(e))
     if args.duration <= 0:
         parser.error("--duration 必须为正数（单位：分钟）")
+    if args.max_videos is None:
+        args.max_videos = 0
+    elif args.max_videos < 0:
+        parser.error("--max-videos 不能为负数")
     if args.intro:
         try:
             resolve_intro_path(args.intro, args.config)
@@ -248,6 +258,7 @@ def main() -> None:
     print(f"  目标时长:  {args.duration:g} min")
     if args.intro:
         print(f"  片头:      {args.intro}")
+    print(f"  max-videos: {args.max_videos}")
     print(f"{'=' * 60}\n")
 
     for i, t in enumerate(topics, 1):
