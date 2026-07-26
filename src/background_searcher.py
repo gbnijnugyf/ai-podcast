@@ -26,6 +26,13 @@ FALLBACK_BG_DIR = os.path.join(
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
+# 候选 title/tags 命中任一子串则剔除（小写匹配）
+BLOCKED_MEDIA_TERMS = (
+    "openai",
+    "chatgpt",
+    "chat gpt",
+)
+
 
 @dataclass
 class MediaCandidate:
@@ -64,6 +71,9 @@ class BackgroundSearcher:
         if not keyword:
             return None
         images, _videos = self._gather_candidates(keyword, want_video=False)
+        images = [c for c in images if not self._is_blocked_media(c)]
+        for c in images:
+            c.score = self._score_candidate(c, keyword)
         best = self._pick_best(images, exclude_ids=set())
         if not best:
             return None
@@ -101,6 +111,10 @@ class BackgroundSearcher:
             images, videos = self._gather_candidates(
                 keyword, want_video=(max_videos > 0)
             )
+            n_raw = len(images) + len(videos)
+            images = [c for c in images if not self._is_blocked_media(c)]
+            videos = [c for c in videos if not self._is_blocked_media(c)]
+            n_blocked = n_raw - len(images) - len(videos)
             for c in images + videos:
                 c.score = self._score_candidate(c, keyword, narration)
             images.sort(key=lambda c: c.score, reverse=True)
@@ -127,7 +141,8 @@ class BackgroundSearcher:
                 f"{top.source}/{top.media_type} score={top.score:.1f}"
                 if top else "无候选"
             )
-            print(f"      候选: 图 {img_n} / 视频 {vid_n}，最优 {top_info}")
+            blocked_info = f"，黑名单剔除 {n_blocked}" if n_blocked else ""
+            print(f"      候选: 图 {img_n} / 视频 {vid_n}{blocked_info}，最优 {top_info}")
 
         # 2) 分配视频名额（相关度优势优先）
         video_slots: set[int] = set()
@@ -424,10 +439,17 @@ class BackgroundSearcher:
         parts = re.split(r"[^a-z0-9\u4e00-\u9fff]+", text)
         return [p for p in parts if len(p) >= 2]
 
+    def _is_blocked_media(self, cand: MediaCandidate) -> bool:
+        """标题/标签命中黑名单则禁止选用（如 OpenAI / ChatGPT 品牌图）。"""
+        hay = f"{cand.title} {cand.tags}".lower()
+        return any(term in hay for term in BLOCKED_MEDIA_TERMS)
+
     def _score_candidate(
         self, cand: MediaCandidate, keyword: str, narration: str = ""
     ) -> float:
         """基于标题/标签与 keyword（及口播文本）的词重叠打分。"""
+        if self._is_blocked_media(cand):
+            return float("-inf")
         hay = f"{cand.title} {cand.tags}".lower()
         keys = self._tokenize(keyword)
         if not keys:
@@ -456,8 +478,11 @@ class BackgroundSearcher:
         self, candidates: list[MediaCandidate], exclude_ids: set[str]
     ) -> MediaCandidate | None:
         for c in sorted(candidates, key=lambda x: x.score, reverse=True):
-            if c.media_id not in exclude_ids:
-                return c
+            if c.media_id in exclude_ids:
+                continue
+            if c.score == float("-inf"):
+                continue
+            return c
         return None
 
     def _download_candidate(self, cand: MediaCandidate) -> str | None:

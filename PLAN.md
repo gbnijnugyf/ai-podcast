@@ -366,3 +366,17 @@ Pillow 合成：
 2. [x] 改 `src/tts.py`：读/写缓存、按页跳过、指纹校验、`clear_cache()`
 3. [x] 改 `main.py`：视频成功后清理 TTS 缓存
 4. [x] 更新用法注释与 `docs/使用指南.md` / `docs/模块说明.md`
+
+### 步骤 12：背景媒资黑名单（禁止 OpenAI / ChatGPT 相关图）
+
+**目标：** 选图时排除标题/标签含 OpenAI、ChatGPT 相关字样的候选，避免品牌/产品图入镜。
+
+**方案：**
+- 选图侧（主）：`background_searcher.py` 对候选 `title`/`tags` 做子串黑名单过滤（`openai`、`chatgpt`、`chat gpt`）
+- 文案侧（辅）：`script_generator.py` 的 keyword 规则禁止用上述品牌词作搜索词
+
+**实施步骤：**
+1. [x] 更新 `PLAN.md` 写入本方案
+2. [x] 改 `src/background_searcher.py`：黑名单过滤
+3. [x] 改 `src/script_generator.py`：keyword 提示词限制
+4. [x] 更新 `docs/模块说明.md`

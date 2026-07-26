@@ -39,7 +39,8 @@ SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，擅长用�
 5. 每个 block 的 narration 包含 2-3 个分句，朗读时长约 4-8 秒（约 30-60 字）
 6. 每个 block 必须有一个 keyword（英文，用于搜索配图，描述该段核心画面）
 7. keyword 要具体、可视化，能搜索到有意义的图片（如 "nvidia gpu server rack" 而非 "technology"）
-8. 不需要生成结束语，程序会自动追加
+8. keyword 禁止包含 openai、chatgpt、chat gpt 等字样；改用通用画面（如 "ai neural network abstract"）
+9. 不需要生成结束语，程序会自动追加
 
 写作风格要求：
 - 不要浮于表面罗列信息，要对话题有一定深度的分析
@@ -81,7 +82,8 @@ ARTICLE_SCRIPT_PROMPT = """你是一个专业的短视频口播文案编辑，�
 5. 每个 block 的 narration 包含 2-3 个分句，朗读时长约 4-8 秒（约 30-60 字）
 6. 每个 block 必须有一个 keyword（英文，用于搜索配图，描述该段核心画面）
 7. keyword 要具体、可视化，能搜索到有意义的图片（如 "nvidia gpu server rack" 而非 "technology"）
-8. 不需要生成结束语，程序会自动追加
+8. keyword 禁止包含 openai、chatgpt、chat gpt 等字样；改用通用画面（如 "ai neural network abstract"）
+9. 不需要生成结束语，程序会自动追加
 
 写作风格要求：
 - 不要浮于表面罗列信息，要对话题有一定深度的分析
@@ -122,7 +124,8 @@ TEXT_TO_SCRIPT_PROMPT = """你是一个专业的短视频文稿编辑。
 4. 每个 block 约 30-60 字（朗读约 4-8 秒）
 5. 每个 block 必须有一个 keyword（英文，用于搜索配图，描述该段核心画面）
 6. keyword 要具体、可视化，能搜索到有意义的图片（如 "nvidia gpu server rack" 而非 "technology"）
-7. 不需要 opening，不需要结束语
+7. keyword 禁止包含 openai、chatgpt、chat gpt 等字样；改用通用画面（如 "ai neural network abstract"）
+8. 不需要 opening，不需要结束语
 
 原文文稿：
 {article}
