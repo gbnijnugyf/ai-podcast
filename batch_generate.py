@@ -16,6 +16,9 @@
 
   python batch_generate.py --topics-file topics.txt --max-videos 2
 
+  # TTS 中断后：重试全部未完成的批量工作目录（复用 TTS 缓存）
+  python batch_retry_tts.py
+
 topics.txt 文件格式（每行一个 topic，空行和 # 开头的行会被忽略）：
   AI大模型最新进展
   量子计算突破

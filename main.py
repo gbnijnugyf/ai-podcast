@@ -251,8 +251,10 @@ def _run_topic_pipeline(args, config: dict):
 
     from src.intro import resolve_intro_path
 
+    # CLI --intro > script JSON intro > config.video.intro_video
+    intro_name = getattr(args, "intro", None) or script_data.get("intro")
     try:
-        intro_path = resolve_intro_path(getattr(args, "intro", None), args.config)
+        intro_path = resolve_intro_path(intro_name, args.config)
     except ValueError as e:
         raise SystemExit(f"[错误] {e}") from e
 

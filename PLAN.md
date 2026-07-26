@@ -380,3 +380,20 @@ Pillow 合成：
 2. [x] 改 `src/background_searcher.py`：黑名单过滤
 3. [x] 改 `src/script_generator.py`：keyword 提示词限制
 4. [x] 更新 `docs/模块说明.md`
+
+### 步骤 13：批量 TTS 续跑脚本
+
+**目标：** 一键重试 `batch_generate.py` 未完成的 topic（工作目录仍保留），从 TTS 阶段续跑并复用缓存。
+
+**方案：**
+- 入口：`python batch_retry_tts.py`（无参数）
+- 未完成判定：`output/batch/*/` 仍存在，且含 `_config.yaml` + `slides/topic_bg` 媒资（成功时 batch 会删工作目录）
+- 文稿：优先 `work_dir/script.json`；生成侧在批量配置下同步写入；旧目录则按时间戳+标题启发式匹配 `output/script_*.json`
+- 调用：`main.py --script-json --bg-dir --config work_dir/_config.yaml --output output/video/<workdir名>.mp4`
+- TTS 缓存按隔离 config 落在 `work_dir/tts/`；视频成功后 `main.py` 清理 TTS，脚本再删除整个 work_dir
+
+**实施步骤：**
+1. [x] 更新 `PLAN.md` 写入本方案
+2. [x] `generate_video_from_report.py`：批量时写入 `script.json` / `_job.json`
+3. [x] 新增 `batch_retry_tts.py`
+4. [x] 更新用法说明

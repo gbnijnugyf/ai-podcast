@@ -18,6 +18,9 @@
   # 指定主题从 TTS 阶段重启（有 TTS 缓存则按页续跑，跳过已合成页）
   python main.py --script-json output/script_20260621_xxxxxx.json --bg-dir output/slides/topic_bg
 
+  # 批量未完成任务：从 TTS 续跑（复用 output/batch/*/tts 缓存）
+  python batch_retry_tts.py
+
   # 一键：抓取新闻 → 生成日报 → 生成视频
   python generate_video_from_report.py --generate
 
@@ -129,6 +132,35 @@ def _make_script_generator(args):
     )
 
 
+def _save_script_json(script_data: dict, args) -> Path:
+    """保存口播文稿；批量隔离配置下同步写入 work_dir/script.json 供续跑。"""
+    if args.intro:
+        script_data["intro"] = args.intro
+
+    script_json_path = Path("output") / f"script_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    script_json_path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(script_data, ensure_ascii=False, indent=2)
+    script_json_path.write_text(text, encoding="utf-8")
+    print(f"  文稿 JSON: {script_json_path}")
+
+    config_path = Path(args.config)
+    if config_path.name == "_config.yaml":
+        work_dir = config_path.parent
+        local_script = work_dir / "script.json"
+        local_script.write_text(text, encoding="utf-8")
+        job = {
+            "script_json": str(local_script).replace("\\", "/"),
+            "genre": args.genre,
+            "intro": args.intro,
+            "output": args.output,
+        }
+        job_path = work_dir / "_job.json"
+        job_path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"  批量作业: {job_path}")
+
+    return script_json_path
+
+
 def _topic_main_cmd(script_json_path: Path, args) -> list[str]:
     cmd = [sys.executable, str(MAIN_SCRIPT), "--script-json", str(script_json_path)]
     if args.voice:
@@ -236,11 +268,7 @@ def main() -> None:
 
         gen = _make_script_generator(args)
         script_data = gen.generate(topic)
-
-        script_json_path = Path("output") / f"script_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        script_json_path.parent.mkdir(parents=True, exist_ok=True)
-        script_json_path.write_text(json.dumps(script_data, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"  文稿 JSON: {script_json_path}")
+        script_json_path = _save_script_json(script_data, args)
 
         print(f"\n{'=' * 60}")
         print(f"  阶段 2：生成口播视频（话题模式）")
@@ -275,10 +303,7 @@ def main() -> None:
         else:
             script_data = gen.generate_from_article(article_text)
 
-        script_json_path = Path("output") / f"script_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        script_json_path.parent.mkdir(parents=True, exist_ok=True)
-        script_json_path.write_text(json.dumps(script_data, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"  文稿 JSON: {script_json_path}")
+        script_json_path = _save_script_json(script_data, args)
 
         print(f"\n{'=' * 60}")
         print(f"  阶段 2：生成口播视频（文稿模式）")
