@@ -158,6 +158,7 @@ class BackgroundSearcher:
                 print(f"  视频名额分配给 block: {sorted(video_slots)}")
 
         # 3) 下载
+        print(f"  开始下载媒资（共 {len(block_candidates)} 个 block）...", flush=True)
         paths: list[str] = []
         for b in block_candidates:
             idx = b["index"]
@@ -490,25 +491,57 @@ class BackgroundSearcher:
         cache_name = hashlib.md5(cand.media_id.encode()).hexdigest() + ext
         cache_path = os.path.join(self.cache_dir, cache_name)
         if os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
+            print(
+                f"      ↓ 缓存命中 {cand.source}/{cand.media_type}: {cache_path}",
+                flush=True,
+            )
             return cache_path
 
+        print(
+            f"      ↓ 下载中 {cand.source}/{cand.media_type} ({cand.media_id}) ...",
+            flush=True,
+        )
         try:
             resp = requests.get(cand.url, timeout=60, stream=True)
             resp.raise_for_status()
+            total = int(resp.headers.get("Content-Length") or 0)
             raw_path = cache_path + ".raw"
+            downloaded = 0
+            last_report = 0
             with open(raw_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=1 << 16):
-                    if chunk:
-                        f.write(chunk)
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    # 每约 2MB 打一次进度，避免大视频长时间无输出
+                    if downloaded - last_report >= 2 * 1024 * 1024:
+                        last_report = downloaded
+                        if total > 0:
+                            pct = downloaded * 100 / total
+                            print(
+                                f"        … {downloaded / (1024 * 1024):.1f}/"
+                                f"{total / (1024 * 1024):.1f} MB ({pct:.0f}%)",
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                f"        … {downloaded / (1024 * 1024):.1f} MB",
+                                flush=True,
+                            )
 
             if cand.media_type == "video":
                 os.replace(raw_path, cache_path)
             else:
                 self._resize_to_fullscreen(raw_path, cache_path)
                 os.remove(raw_path)
+            print(
+                f"        … 完成 {downloaded / (1024 * 1024):.1f} MB → {cache_path}",
+                flush=True,
+            )
             return cache_path
         except Exception as e:
-            print(f"    [下载失败] {cand.media_id}: {e}")
+            print(f"    [下载失败] {cand.media_id}: {e}", flush=True)
             return None
 
     def _resize_to_fullscreen(self, src_path: str, dest_path: str):
