@@ -1,6 +1,7 @@
-config.yaml
+﻿config.yaml
 output/
 data/
 __pycache__/
 
 asset/images/
+asset/swat.fbx
