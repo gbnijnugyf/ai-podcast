@@ -24,8 +24,9 @@ SCRIPT_ROOT = THIS_DIR / "output"
 VIDEO_ROOT = THIS_DIR / "output" / "video"
 
 MEDIA_EXTS = {".jpg", ".jpeg", ".png", ".mp4", ".mov", ".webm", ".mkv"}
-TS_RE = re.compile(r"_(\d{8}_\d{6})$")
-SCRIPT_TS_RE = re.compile(r"^script_(\d{8}_\d{6})\.json$")
+# 同时兼容旧的秒级文件名和附带任务 UUID 的新文件名。
+TS_RE = re.compile(r"_(\d{8}_\d{6})(?:_[0-9a-f]{32})?$")
+SCRIPT_TS_RE = re.compile(r"^script_(\d{8}_\d{6})(?:_[0-9a-f]{32})?\.json$")
 
 
 def _media_count(bg_dir: Path) -> int:

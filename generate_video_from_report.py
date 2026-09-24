@@ -61,6 +61,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 AI_DAILY_ROOT = Path(r"D:\Study\aiproject\ai-daily\paper_daily")
 AI_DAILY_OUTPUT_ROOT = AI_DAILY_ROOT / "output"
@@ -133,11 +134,11 @@ def _make_script_generator(args):
 
 
 def _save_script_json(script_data: dict, args) -> Path:
-    """保存口播文稿；批量隔离配置下同步写入 work_dir/script.json 供续跑。"""
+    """保存唯一文稿存档；批量任务直接使用独立工作目录内的文稿。"""
     if args.intro:
         script_data["intro"] = args.intro
 
-    script_json_path = Path("output") / f"script_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    script_json_path = Path("output") / f"script_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex}.json"
     script_json_path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(script_data, ensure_ascii=False, indent=2)
     script_json_path.write_text(text, encoding="utf-8")
@@ -157,6 +158,7 @@ def _save_script_json(script_data: dict, args) -> Path:
         job_path = work_dir / "_job.json"
         job_path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"  批量作业: {job_path}")
+        return local_script
 
     return script_json_path
 

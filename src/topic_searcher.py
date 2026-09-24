@@ -87,7 +87,7 @@ class TopicSearcher:
 
     def _search_bing_news(self, topic: str, max_results: int) -> list[dict]:
         """从 Bing 新闻搜索获取结果。"""
-        url = f"https://cn.bing.com/news/search?q={quote_plus(topic)}&FORM=HDRSC6"
+        url = f"https://www.bing.com/news/search?q={quote_plus(topic)}&FORM=HDRSC6"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -103,7 +103,7 @@ class TopicSearcher:
 
     def _search_bing_web(self, topic: str, max_results: int) -> list[dict]:
         """从 Bing 网页搜索获取结果。"""
-        url = f"https://cn.bing.com/search?q={quote_plus(topic)}"
+        url = f"https://www.bing.com/search?q={quote_plus(topic)}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",

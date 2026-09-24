@@ -34,6 +34,7 @@ import sys
 import re
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yaml
@@ -111,7 +112,8 @@ def create_isolated_config(base_config_path: str, topic_name: str,
 def run_single_topic(topic: str, base_config: str, extra_args: list[str],
                      index: int, total: int) -> dict:
     """为单个 topic 运行完整的视频生成流程（隔离工作目录）。"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # UUID 防止重复主题、截断后同名主题以及同时启动的批次相互覆盖。
+    timestamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex}"
     safe_name = sanitize_filename(topic)
 
     # ---- 每个 topic 用独立配置，隔离输出目录 ----
