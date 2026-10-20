@@ -27,6 +27,7 @@ topics.txt 文件格式（每行一个 topic，空行和 # 开头的行会被忽
   新能源汽车行业动态
 """
 import os
+import json
 import argparse
 import shutil
 import subprocess
@@ -82,7 +83,7 @@ def read_topics(file_path: str) -> list[str]:
 
 
 def create_isolated_config(base_config_path: str, topic_name: str,
-                           timestamp: str) -> tuple[str, str]:
+                           timestamp: str, job_id: str | None = None) -> tuple[str, str]:
     """基于原配置创建副本，将所有输出目录重定向到 topic 专属工作目录。
 
     Returns:
@@ -92,7 +93,9 @@ def create_isolated_config(base_config_path: str, topic_name: str,
         config = yaml.safe_load(f)
 
     safe_name = sanitize_filename(topic_name)
-    work_dir = f"output/batch/{safe_name}_{timestamp}"
+    if job_id and not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
+        raise ValueError("Invalid job ID")
+    work_dir = f"output/batch/{job_id or f'{safe_name}_{timestamp}'}"
 
     # 重定向所有输出目录到隔离的工作目录
     for section, key in ISOLATED_DIR_KEYS.items():
@@ -110,18 +113,21 @@ def create_isolated_config(base_config_path: str, topic_name: str,
 
 
 def run_single_topic(topic: str, base_config: str, extra_args: list[str],
-                     index: int, total: int) -> dict:
+                     index: int, total: int, job_id: str | None = None,
+                     keep_work_dir: bool = False) -> dict:
     """为单个 topic 运行完整的视频生成流程（隔离工作目录）。"""
     # UUID 防止重复主题、截断后同名主题以及同时启动的批次相互覆盖。
     timestamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex}"
     safe_name = sanitize_filename(topic)
 
     # ---- 每个 topic 用独立配置，隔离输出目录 ----
-    topic_config, work_dir = create_isolated_config(base_config, topic, timestamp)
+    if job_id and (THIS_DIR / "output" / "batch" / job_id).exists():
+        raise ValueError("Job directory already exists; resume it instead of regenerating.")
+    topic_config, work_dir = create_isolated_config(base_config, topic, timestamp, job_id)
 
     # 最终视频输出到公共目录，方便查找
     output_path = (THIS_DIR / "output" / "video" /
-                   f"{safe_name}_{timestamp}.mp4")
+                   f"{job_id or f'{safe_name}_{timestamp}'}.mp4")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
@@ -143,7 +149,7 @@ def run_single_topic(topic: str, base_config: str, extra_args: list[str],
     elapsed = (datetime.now() - start).total_seconds()
 
     # 可选：完成后清理中间文件，最终视频已保存到公共目录
-    cleanup = not result.returncode  # 仅在成功时清理工作目录
+    cleanup = not result.returncode and not keep_work_dir
     if cleanup:
         try:
             work_dir_path = THIS_DIR / work_dir
@@ -158,6 +164,7 @@ def run_single_topic(topic: str, base_config: str, extra_args: list[str],
         "success": result.returncode == 0,
         "output": str(output_path),
         "elapsed": elapsed,
+        "work_dir": str(THIS_DIR / work_dir),
     }
 
 
@@ -200,6 +207,9 @@ def main() -> None:
                         help="topic 列表文件（每行一个 topic）")
     parser.add_argument("--max-workers", type=int, default=2,
                         help="最大并行数，默认 2")
+    parser.add_argument("--job-id", help="单主题自动任务的固定 ID；已有任务必须续跑")
+    parser.add_argument("--keep-work-dir", action="store_true", help="保留任务资料供云端续跑")
+    parser.add_argument("--result-json", type=Path, help="保存机器可读结果")
 
     # ---------- 透传参数 ----------
     parser.add_argument("--voice", type=str,
@@ -240,6 +250,8 @@ def main() -> None:
             parser.error(str(e))
 
     topics = read_topics(args.topics_file)
+    if args.job_id and (len(topics) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]+", args.job_id)):
+        parser.error("--job-id 需要恰好一个主题，且仅含字母、数字、下划线或连字符")
     extra_args = build_pass_through_args(args)
 
     # 确保基准配置文件存在
@@ -276,7 +288,7 @@ def main() -> None:
         future_map = {
             executor.submit(
                 run_single_topic, topic, args.config, extra_args,
-                idx, len(topics)
+                idx, len(topics), args.job_id, args.keep_work_dir
             ): topic
             for idx, topic in enumerate(topics, 1)
         }
@@ -313,6 +325,9 @@ def main() -> None:
         print(f"     耗时: {r['elapsed']:.0f}s")
 
     print(f"\n  结果: {success_count}/{len(results)} 成功")
+    if args.result_json:
+        args.result_json.parent.mkdir(parents=True, exist_ok=True)
+        args.result_json.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     if success_count < len(results):
         sys.exit(1)
 

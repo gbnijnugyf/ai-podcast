@@ -21,6 +21,7 @@ from src.slide_generator import SlideGenerator
 from src.tts import TTSEngine
 from src.renderer import Renderer
 from src.composer import VideoComposer
+from src.pipeline_state import write_stage
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -158,6 +159,7 @@ def _run_topic_pipeline(args, config: dict):
     print("=" * 50)
 
     bg_output_dir = os.path.join(config.get("slides", {}).get("output_dir", "output/slides"), "topic_bg")
+    write_stage(args.config, "background")
 
     if getattr(args, "bg_dir", None) and os.path.isdir(args.bg_dir):
         bg_files = sorted([
@@ -195,7 +197,13 @@ def _run_topic_pipeline(args, config: dict):
         tts.voice = args.voice
     if args.rate:
         tts.rate = args.rate
-    audio_paths, all_timestamps = tts.synthesize_slides(all_slides_data)
+    write_stage(args.config, "tts")
+    try:
+        audio_paths, all_timestamps = tts.synthesize_slides(all_slides_data)
+    except Exception:
+        write_stage(args.config, "tts_failed")
+        raise
+    write_stage(args.config, "compose")
 
     composer = VideoComposer(args.config)
     audio_output_dir = config["tts"]["output_dir"]
@@ -293,7 +301,9 @@ def _run_topic_pipeline(args, config: dict):
         title_text=title_text,
     )
 
-    tts.clear_cache()
+    write_stage(args.config, "succeeded")
+    if not config.get("tts", {}).get("keep_cache", False):
+        tts.clear_cache()
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 50)

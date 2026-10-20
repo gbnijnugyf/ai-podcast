@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import argparse
 import re
 import shutil
 import subprocess
@@ -163,7 +164,7 @@ def _resolve_script(
     return best
 
 
-def retry_one(work_dir: Path, script_path: Path) -> dict:
+def retry_one(work_dir: Path, script_path: Path, keep_work_dir: bool = False) -> dict:
     config_path = work_dir / "_config.yaml"
     bg_dir = work_dir / "slides" / "topic_bg"
     job = _load_job(work_dir)
@@ -207,7 +208,7 @@ def retry_one(work_dir: Path, script_path: Path) -> dict:
     elapsed = (datetime.now() - start).total_seconds()
     ok = result.returncode == 0
 
-    if ok:
+    if ok and not keep_work_dir:
         try:
             shutil.rmtree(work_dir, ignore_errors=True)
             print(f"  [清理] 已删除工作目录: {work_dir}")
@@ -223,6 +224,23 @@ def retry_one(work_dir: Path, script_path: Path) -> dict:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--work-dir", type=Path, help="只续跑指定任务，不扫描其他任务")
+    parser.add_argument("--keep-work-dir", action="store_true")
+    args = parser.parse_args()
+    if args.work_dir:
+        work = args.work_dir.resolve()
+        if not work.is_relative_to(BATCH_ROOT.resolve()) or work == BATCH_ROOT.resolve():
+            parser.error("--work-dir 必须位于 output/batch 的任务子目录")
+        if not (work / "_config.yaml").is_file() or not (work / "script.json").is_file():
+            parser.error("指定任务缺少配置或自己的文稿；禁止启发式匹配其他任务")
+        if _media_count(work / "slides" / "topic_bg") < 1:
+            parser.error("指定任务缺少背景媒资")
+        # Use only this job's script. Never scan unrelated old tasks in cloud runs.
+        result = retry_one(work, work / "script.json", args.keep_work_dir)
+        if not result["success"]:
+            sys.exit(1)
+        return
     work_dirs = list_unfinished_work_dirs()
     if not work_dirs:
         print("没有未完成的批量任务（output/batch 下无待续跑工作目录）。")
@@ -252,7 +270,7 @@ def main() -> None:
             })
             continue
         used_scripts.add(script_path.resolve())
-        results.append(retry_one(work_dir, script_path))
+        results.append(retry_one(work_dir, script_path, args.keep_work_dir))
 
     ok_n = sum(1 for r in results if r.get("success"))
     print(f"\n{'=' * 60}")

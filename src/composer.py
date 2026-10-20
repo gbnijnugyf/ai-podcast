@@ -597,7 +597,9 @@ class VideoComposer:
 
         if title_text:
             lines = title_text.split("\\n")
-            font_path = "C\\\\:/Windows/Fonts/msyhbd.ttc"
+            font_path = self.config.get("slides", {}).get(
+                "font_path", "C:/Windows/Fonts/msyhbd.ttc"
+            ).replace("\\", "/").replace(":", "\\\\:")
 
             if len(lines) >= 2:
                 line1 = lines[0]
