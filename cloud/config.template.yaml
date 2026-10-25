@@ -28,5 +28,7 @@ pixabay: {}
 media:
   max_videos: 0
   per_page: 8
+  required_sources: [pexels]
+  min_online_media_ratio: 0.8
 search:
   timeout: 20

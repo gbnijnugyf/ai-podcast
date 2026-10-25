@@ -26,19 +26,22 @@ Linux 参数在 `cloud/config.template.yaml`，凭据在运行时注入 ignored 
 | `PODCAST_GITHUB_TOKEN` | 产物仓库 Contents 读写 | Network secret，域名 api.github.com、uploads.github.com |
 | `DEEPSEEK_API_KEY` | 财经评分及现有脚本的口播文稿生成 | Network secret，域名 api.deepseek.com |
 | `DEEPSEEK_MODEL` | 可选，默认沿用 deepseek-chat | 普通环境变量；如账号不支持此别名，填写账号可用模型名 |
-| `PEXELS_API_KEY` | 可选，下载背景图片 | Network secret，域名 api.pexels.com |
+| `PEXELS_API_KEY` | 必需，云端生产背景图片主源 | Network secret，域名 api.pexels.com |
 | `PIXABAY_API_KEY` | 可选，下载背景图片 | Network secret，域名 pixabay.com |
 | `PODCAST_FONT` | 可选，覆盖 Linux 中文字体路径 | 普通环境变量 |
 | `PODCAST_FFMPEG` / `PODCAST_FFPROBE` | 可选，可执行文件路径 | 普通环境变量 |
 
-未提供图片服务密钥时，已有背景搜索模块使用仓库自带的兜底图片。
+云端模板要求提供 Pexels 密钥；Pixabay 可在以后作为第二 API 来源补充。每期至少
+80% 正文 block 必须成功使用网络媒资，低于门槛会在 TTS 前停止，禁止发布全部或
+大部分使用仓库兜底图的视频。非云端配置未设置门槛时仍保持原有宽松行为。
 DeepSeek 不生成最终单句总结；当前 Codex Cloud 任务按固定提示词直接总结正文，
 不调用 OpenAI API，也不依赖指定 ChatGPT 网页会话。
 
 网络还需要允许 36kr 网页访问、`bing.com`/`www.bing.com`（文稿搜索主入口）、
 `cn.bing.com`（搜索兜底）、
 GitHub Release 下载域名、Edge TTS 使用的 `speech.platform.bing.com`，
-以及启用图片服务后实际返回的图片 CDN。Edge TTS 使用 WebSocket；
+Pexels 素材域名 `images.pexels.com`（启用视频时还包括 `videos.pexels.com`），
+以及启用 Pixabay 后实际返回的 `cdn.pixabay.com` 等素材域名。Edge TTS 使用 WebSocket；
 域名白名单本身不证明云端代理支持其连接，必须实测。
 安装期间还需软件源访问。不要关闭环境代理来绕过限制。
 GitHub 权限详情见 [github-output.md](github-output.md)。
@@ -109,9 +112,10 @@ GitHub 产物仓库的 `locks/日期.json` 是短期互斥锁，只含任务标�
 
 ```sh
 python -m unittest discover -s tests -p 'test_daily_*.py' -v
+python -m unittest discover -s tests -p 'test_*searcher.py' -v
 python -m unittest discover -s tests -p 'test_batch_isolation.py' -v
 python -m unittest discover -s tests -p 'test_github_output.py' -v
 ```
 
 这些测试验证控制流、筛选、恢复和数据隔离，不调用付费模型或真实 TTS。
-实际 36kr 正文获取、Edge TTS 网络和云端计划必须按上述步骤单独验收。
+实际 36kr 正文获取、Pexels API/素材下载、Edge TTS 网络和云端计划必须按上述步骤单独验收。

@@ -14,3 +14,4 @@ python -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ require
 python -m pip install -r cloud/requirements.txt
 ffmpeg -version
 python -m unittest discover -s tests -p 'test_daily_*.py' -v
+python -m unittest discover -s tests -p 'test_*searcher.py' -v

@@ -354,12 +354,24 @@ class DailyPipeline:
                 self.checkpoint()
                 raise RuntimeError("TTS retry budget exhausted; resume this date in a new cloud task")
         validation = validate_video(output, config)
+        media_path = self.job / "media.json"
+        if "media.json" in remote:
+            self.store.download(remote["media.json"], media_path)
+        else:
+            source_media = self.work / "slides/topic_bg/media_sources.json"
+            if not source_media.is_file():
+                raise RuntimeError("Missing media source report; cannot verify network-image coverage")
+            shutil.copyfile(source_media, media_path)
+        media_report = read_json(media_path)
+        if media_report.get("ratio", 0) < float((config.get("media") or {}).get(
+                "min_online_media_ratio", 0) or 0):
+            raise RuntimeError("Saved media coverage is below the configured publication threshold")
         shutil.copyfile(output, upload_video)
         manifest_path = self.job / "manifest.json"
         manifest = {
             "version": 1, "date": self.day, "article_url": article["url"],
             "published_at": article["published_at"], "fallback": article["fallback"],
-            "source_commit": article["source_commit"], "video": validation,
+            "source_commit": article["source_commit"], "media": media_report, "video": validation,
         }
         if "manifest.json" in remote:
             if self.store.json_asset(remote["manifest.json"]) != manifest:
@@ -371,7 +383,8 @@ class DailyPipeline:
         for attempt in range(3):
             try:
                 result = self.store.client.upload(self.tag, [
-                    upload_video, self.job / "article.json", self.job / "summary.json", manifest_path,
+                    media_path, upload_video, self.job / "article.json",
+                    self.job / "summary.json", manifest_path,
                 ], True)
                 break
             except (RuntimeError, OSError):

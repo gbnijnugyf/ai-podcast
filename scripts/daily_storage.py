@@ -27,6 +27,8 @@ def checkpoint_path(name: str) -> bool:
         return False
     if name in ("script.json", "tts/tts_cache.json", "_pipeline.json"):
         return True
+    if name == "slides/topic_bg/media_sources.json":
+        return True
     return bool(re.fullmatch(
         r"(?:tts/slide_\d+\.mp3|slides/topic_bg/[A-Za-z0-9_-]+\.(?:jpg|jpeg|png|webp))",
         name,

@@ -95,6 +95,10 @@ class DailyTests(unittest.TestCase):
 
     def generated(self):
         self.stage("succeeded")
+        save_json(self.pipeline.work / "slides/topic_bg/media_sources.json", {
+            "version": 1, "online": 1, "total": 1, "ratio": 1.0,
+            "items": [{"block": 1, "source": "pexels", "online": True}],
+        })
         video = self.root / "output/video" / f"daily-{DAY}.mp4"
         video.parent.mkdir(parents=True, exist_ok=True)
         video.write_bytes(b"fake video used only in control-flow tests")
@@ -170,6 +174,7 @@ class DailyTests(unittest.TestCase):
         validate.assert_called_once()
         sleep.assert_not_called()
         self.assertTrue(self.store.published)
+        self.assertEqual(json.loads(self.store.files["manifest.json"])["media"]["ratio"], 1.0)
         self.assertEqual((self.root / "topics.txt").read_text(encoding="utf-8").strip(),
                          self.summary["summary"])
 
@@ -227,6 +232,9 @@ class DailyTests(unittest.TestCase):
 
     def test_resume_partial_remote_upload_does_not_repeat_generation(self):
         self.store.files["video.mp4"] = b"already uploaded video"
+        self.store.files["media.json"] = json.dumps({
+            "version": 1, "online": 1, "total": 1, "ratio": 1.0, "items": [],
+        }).encode()
         result, run, _, _ = self.run_pipeline(Mock(side_effect=AssertionError("must not generate")))
         self.assertTrue(result["completed"])
         run.assert_not_called()
@@ -287,7 +295,8 @@ class CheckpointTests(unittest.TestCase):
                      "../script.json", "/script.json", "tts/../script.json", "tts\\slide_001.mp3"):
             self.assertFalse(checkpoint_path(name), name)
         for name in ("script.json", "_pipeline.json", "tts/tts_cache.json",
-                     "tts/slide_001.mp3", "slides/topic_bg/bg_001.jpg"):
+                     "tts/slide_001.mp3", "slides/topic_bg/bg_001.jpg",
+                     "slides/topic_bg/media_sources.json"):
             self.assertTrue(checkpoint_path(name), name)
 
     def test_checkpoint_sanitizes_cache_and_excludes_config(self):

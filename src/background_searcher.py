@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import random
 import re
@@ -63,6 +64,17 @@ class BackgroundSearcher:
         self.width = config.get("slides", {}).get("width", 1920)
         self.height = config.get("slides", {}).get("height", 1080)
         self.per_page = int(media_cfg.get("per_page", 8))
+        self.min_online_media_ratio = float(media_cfg.get("min_online_media_ratio", 0) or 0)
+        if not 0 <= self.min_online_media_ratio <= 1:
+            raise ValueError("media.min_online_media_ratio must be between 0 and 1")
+        keys = {"pexels": self.pexels_api_key, "pixabay": self.pixabay_api_key}
+        required = set(media_cfg.get("required_sources") or [])
+        unknown = required - keys.keys()
+        if unknown:
+            raise ValueError(f"Unknown required media sources: {', '.join(sorted(unknown))}")
+        missing = [name for name in sorted(required) if not keys[name]]
+        if missing:
+            raise RuntimeError(f"Missing required media API keys: {', '.join(missing)}")
         self._used_fallback_images: set[str] = set()
         self._used_media_ids: set[str] = set()
 
@@ -160,6 +172,8 @@ class BackgroundSearcher:
         # 3) 下载
         print(f"  开始下载媒资（共 {len(block_candidates)} 个 block）...", flush=True)
         paths: list[str] = []
+        media_items = []
+        online_count = 0
         for b in block_candidates:
             idx = b["index"]
             use_video = idx in video_slots
@@ -172,6 +186,8 @@ class BackgroundSearcher:
             if chosen is None:
                 fallback = self._generate_fallback(b["keyword"], output_dir, idx)
                 paths.append(fallback)
+                media_items.append({"block": idx, "keyword": b["keyword"], "source": "fallback",
+                                    "media_type": "image", "online": False})
                 print(f"      → 兜底图: {fallback}")
                 continue
 
@@ -179,10 +195,16 @@ class BackgroundSearcher:
             if not local:
                 fallback = self._generate_fallback(b["keyword"], output_dir, idx)
                 paths.append(fallback)
+                media_items.append({"block": idx, "keyword": b["keyword"], "source": "fallback",
+                                    "media_type": "image", "online": False})
                 print(f"      → 下载失败，兜底图: {fallback}")
                 continue
 
             self._used_media_ids.add(chosen.media_id)
+            online_count += 1
+            media_items.append({"block": idx, "keyword": b["keyword"], "source": chosen.source,
+                                "media_type": chosen.media_type, "media_id": chosen.media_id,
+                                "online": True})
             ext = ".mp4" if chosen.media_type == "video" else ".jpg"
             dest = os.path.join(output_dir, f"bg_{idx:03d}{ext}")
             if os.path.abspath(local) != os.path.abspath(dest):
@@ -193,7 +215,22 @@ class BackgroundSearcher:
             paths.append(dest)
             print(f"      → {chosen.source}/{chosen.media_type} ({chosen.score:.1f}): {dest}")
 
+        total = len(block_candidates)
+        report = {"version": 1, "online": online_count, "total": total,
+                  "ratio": online_count / total if total else 1.0, "items": media_items}
+        with open(os.path.join(output_dir, "media_sources.json"), "w", encoding="utf-8") as stream:
+            json.dump(report, stream, ensure_ascii=False, indent=2)
+        self._enforce_online_coverage(online_count, total)
         return paths
+
+    def _enforce_online_coverage(self, online_count: int, total: int) -> None:
+        ratio = online_count / total if total else 1.0
+        print(f"  网络媒资覆盖率: {online_count}/{total} ({ratio:.0%})")
+        if ratio < self.min_online_media_ratio:
+            raise RuntimeError(
+                f"Online media coverage {ratio:.0%} is below required "
+                f"{self.min_online_media_ratio:.0%}; refusing to continue before TTS"
+            )
 
     # ------------------------------------------------------------------
     # 候选收集
@@ -264,7 +301,7 @@ class BackgroundSearcher:
         if not self.pexels_api_key:
             return []
         data = self._request_json(
-            "https://api.pexels.com/videos/search",
+            "https://api.pexels.com/v1/videos/search",
             headers={"Authorization": self.pexels_api_key},
             params={
                 "query": keyword,
@@ -424,12 +461,19 @@ class BackgroundSearcher:
                 return resp.json()
             except Exception as e:
                 last_error = e
+                detail = self._safe_request_error(e)
                 if attempt < max_retries:
-                    print(f"    [{label} 重试 {attempt}/{max_retries}] {keyword}: {e}")
+                    print(f"    [{label} 重试 {attempt}/{max_retries}] {keyword}: {detail}")
                     time.sleep(delay)
                     delay *= 2
-        print(f"    [{label} 失败] {keyword}: {last_error}")
+        print(f"    [{label} 失败] {keyword}: {self._safe_request_error(last_error)}")
         return None
+
+    @staticmethod
+    def _safe_request_error(error: Exception) -> str:
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", None)
+        return f"HTTP {status}" if status else type(error).__name__
 
     # ------------------------------------------------------------------
     # 打分 / 选择 / 下载

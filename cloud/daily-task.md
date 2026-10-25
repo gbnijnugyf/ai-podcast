@@ -73,6 +73,8 @@
 6. 执行 `python scripts/daily_podcast.py --date DATE run`，等待终端完成。
    脚本覆写云端的 topics.txt，运行单主题 batch_generate，默认无数字人和视频背景，
    自动处理 TTS 的 6 次退避重试、检查点、视频音画流和完整解码校验、Release 上传发布。
+   Pexels 是必需图片源，至少 80% 正文 block 必须使用成功下载的网络媒资；密钥缺失
+   或覆盖率不足时必须在 TTS 前停止并保留失败信息，不得降低门槛或继续发布。
    不额外运行不带 --work-dir 的 batch_retry_tts.py，不重复启动相同日期任务。
    上传失败可以再次运行相同 run 命令，不重新选题或总结。
 7. 成功时报告文章标题、原发布日期、是否兜底、私有 Release 链接。
