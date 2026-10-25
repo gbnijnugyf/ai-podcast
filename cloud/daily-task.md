@@ -7,8 +7,11 @@
 
 ## 每次执行
 
-1. 确认源码仓库是 `gbnijnugyf/ai-podcast`，包含本分支的 daily_podcast.py，
-   使用 `codex/github-output-storage` 分支。只在云端工作区执行。
+1. 确认源码仓库是 `gbnijnugyf/ai-podcast`，只在云端工作区执行。先确认
+   `git status --porcelain` 为空，再执行 `git fetch origin main`；仅当当前 HEAD 是
+   `origin/main` 的祖先时执行 `git merge --ff-only origin/main`，并确认两者 SHA 一致。
+   工作区不干净、历史分叉或无法仅快进时立即停止；不得使用 reset、rebase 或强制切换。
+   这样可安全刷新 Codex 环境中的旧仓库快照，不依赖环境重新发布。
    确认 Python 3.11+、FFmpeg、中文字体和 cloud/requirements.txt 已安装。
    日期按 Asia/Shanghai 计算，整次运行使用同一个 YYYY-MM-DD，即使跨过午夜也不变。
    下文将实际日期记作 DATE，不要直接把字面量 DATE 传给脚本。
