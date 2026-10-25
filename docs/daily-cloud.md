@@ -35,7 +35,8 @@ Linux 参数在 `cloud/config.template.yaml`，凭据在运行时注入 ignored 
 DeepSeek 不生成最终单句总结；当前 Codex Cloud 任务按固定提示词直接总结正文，
 不调用 OpenAI API，也不依赖指定 ChatGPT 网页会话。
 
-网络还需要允许 36kr 网页访问、`cn.bing.com`（现有文稿搜索）、
+网络还需要允许 36kr 网页访问、`bing.com`/`www.bing.com`（文稿搜索主入口）、
+`cn.bing.com`（搜索兜底）、
 GitHub Release 下载域名、Edge TTS 使用的 `speech.platform.bing.com`，
 以及启用图片服务后实际返回的图片 CDN。Edge TTS 使用 WebSocket；
 域名白名单本身不证明云端代理支持其连接，必须实测。

@@ -9,6 +9,7 @@
     timeout: 20   # 搜索超时秒数
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -25,6 +26,7 @@ AI_DAILY_ROOT = Path(r"D:\Study\aiproject\ai-daily\paper_daily")
 AI_DAILY_OUTPUT_ROOT = AI_DAILY_ROOT / "output"
 REPORT_FILENAME = "finance_daily_report.txt"
 GENERATE_SCRIPT = AI_DAILY_ROOT / "generate_report_only.py"
+BING_ORIGINS = ("https://bing.com", "https://cn.bing.com")
 
 
 SUMMARIZE_PROMPT = """你是一个专业的新闻编辑。请根据以下搜索结果，整理出一篇关于「{topic}」的资讯简报。
@@ -87,41 +89,44 @@ class TopicSearcher:
 
     def _search_bing_news(self, topic: str, max_results: int) -> list[dict]:
         """从 Bing 新闻搜索获取结果。"""
-        url = f"https://cn.bing.com/news/search?q={quote_plus(topic)}&FORM=HDRSC6"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
-
-        try:
-            with requests.Session() as session:
-                # 搜索走直连，不读取环境变量或系统代理设置。
-                session.trust_env = False
-                resp = session.get(url, headers=headers, timeout=self.timeout)
-            resp.raise_for_status()
-            return self._parse_bing_news(resp.text, max_results)
-        except Exception as e:
-            print(f"  [Bing 新闻搜索失败] {e}")
-            return []
+        html = self._fetch_bing(
+            f"/news/search?q={quote_plus(topic)}&FORM=HDRSC6", headers, "新闻",
+        )
+        return self._parse_bing_news(html, max_results) if html else []
 
     def _search_bing_web(self, topic: str, max_results: int) -> list[dict]:
         """从 Bing 网页搜索获取结果。"""
-        url = f"https://cn.bing.com/search?q={quote_plus(topic)}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
+        html = self._fetch_bing(f"/search?q={quote_plus(topic)}", headers, "网页")
+        return self._parse_bing_web(html, max_results) if html else []
 
-        try:
-            with requests.Session() as session:
-                # 搜索走直连，不读取环境变量或系统代理设置。
-                session.trust_env = False
-                resp = session.get(url, headers=headers, timeout=self.timeout)
-            resp.raise_for_status()
-            return self._parse_bing_web(resp.text, max_results)
-        except Exception as e:
-            print(f"  [Bing 网页搜索失败] {e}")
-            return []
+    def _fetch_bing(self, path: str, headers: dict, kind: str) -> str | None:
+        """按 bing.com → cn.bing.com 顺序请求，并兼容云端代理与本机直连。"""
+        proxy_configured = any(os.environ.get(name) for name in (
+            "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy",
+        ))
+        modes = (True, False) if proxy_configured else (False,)
+        failures = []
+        for origin in BING_ORIGINS:
+            for trust_env in modes:
+                try:
+                    with requests.Session() as session:
+                        session.trust_env = trust_env
+                        response = session.get(origin + path, headers=headers, timeout=self.timeout)
+                    response.raise_for_status()
+                    return response.text
+                except requests.RequestException as error:
+                    route = "代理" if trust_env else "直连"
+                    failures.append(f"{origin} {route} {type(error).__name__}")
+        print(f"  [Bing {kind}搜索失败] {'; '.join(failures)}")
+        return None
 
     def _parse_bing_news(self, html: str, max_results: int) -> list[dict]:
         """解析 Bing 新闻搜索结果页面。"""
