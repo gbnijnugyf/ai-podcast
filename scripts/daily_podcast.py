@@ -1,4 +1,4 @@
-"""Daily cloud pipeline. Browser collection and ChatGPT submission are agent steps.
+"""Daily cloud pipeline. Web collection and final-summary drafting are agent steps.
 
 Use prepare -> select -> accept-summary -> run in the scheduled cloud task.
 All dates use Asia/Shanghai. --date permits an explicit resume of an older job.
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 import math
 import os
@@ -23,7 +24,7 @@ from github_output import digest
 
 ROOT = Path(__file__).resolve().parents[1]
 SHANGHAI = timezone(timedelta(hours=8))
-CHAT_URL = "https://chatgpt.com/c/6a9e499f-13f0-83e8-b3f0-a0975238b613"
+SUMMARY_SOURCE = "codex-cloud-inline-v1"
 RETRY_DELAYS = (60, 120, 240, 480, 900, 900)
 
 
@@ -31,11 +32,15 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def text_digest(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def validate_candidates(candidates, day):
     today = date.fromisoformat(day)
     valid, seen = [], set()
     if not isinstance(candidates, list) or not 1 <= len(candidates) <= 40:
-        raise ValueError("Supply 1-40 browser-verified candidate articles")
+        raise ValueError("Supply 1-40 source-verified candidate articles")
     for item in candidates:
         url = item["url"]
         if not re.fullmatch(r"https://www\.36kr\.com/p/\d+", url):
@@ -48,7 +53,7 @@ def validate_candidates(candidates, day):
             continue
         for key in ("title", "date_evidence", "text"):
             if not isinstance(item.get(key), str) or not item[key].strip():
-                raise ValueError(f"Missing browser evidence: {key}")
+                raise ValueError(f"Missing source evidence: {key}")
         if len(item["text"]) < 200:
             raise ValueError("Candidate needs article text, not just a search snippet")
         seen.add(url)
@@ -112,13 +117,14 @@ def choose_article(candidates, scores, day, used):
     return {
         **{k: item[k] for k in ("url", "title", "published_at", "date_evidence", "heat_evidence")},
         "score": score, "fallback": ("today_hot_controversial", "today_best", "recent_3_days")[tier],
-        "job_date": day,
+        "job_date": day, "article_text_sha256": text_digest(item["text"]),
     }
 
 
 def validate_summary(data, article):
-    if data.get("conversation_url") != CHAT_URL or data.get("article_url") != article["url"]:
-        raise ValueError("Summary provenance must match the specified ChatGPT chat and selected article")
+    if (data.get("source") != SUMMARY_SOURCE or data.get("article_url") != article["url"] or
+            data.get("article_text_sha256") != article["article_text_sha256"]):
+        raise ValueError("Summary provenance must match the Codex task and selected article text")
     text = data.get("summary", "").strip()
     # Conservative total-character cap also satisfies the <=300 Chinese-character requirement.
     if not text or len(text) > 300 or "\n" in text or "\r" in text:
@@ -127,7 +133,8 @@ def validate_summary(data, article):
         raise ValueError("Summary must contain exactly one sentence ending in 。")
     if any(mark in text for mark in ("```", "**")):
         raise ValueError("Summary must be plain text")
-    return {"conversation_url": CHAT_URL, "article_url": article["url"], "summary": text}
+    return {"source": SUMMARY_SOURCE, "article_url": article["url"],
+            "article_text_sha256": article["article_text_sha256"], "summary": text}
 
 
 def runtime_config(root, job):
@@ -230,7 +237,7 @@ class DailyPipeline:
             "release": completed["release"] if completed else None,
             "selected": "article.json" in assets, "summarized": "summary.json" in assets,
             "used_urls": sorted(self.store.used_urls()),
-            "conversation_url": CHAT_URL,
+            "summary_source": SUMMARY_SOURCE,
             "article": self.store.json_asset(assets["article.json"]) if "article.json" in assets else None,
         }
 

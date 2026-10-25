@@ -1,13 +1,12 @@
 # 每日云端播客
 
 本分支提供完整流程的脚本和[云端任务提示词](../cloud/daily-task.md)：
-浏览器选题 → DeepSeek 评分 → 指定 ChatGPT 会话总结 → 单主题生成 →
+网页搜索/HTTPS 选题 → DeepSeek 评分 → Codex Cloud 按固定提示词总结 → 单主题生成 →
 TTS 重试 → 视频校验 → 私有 GitHub Release。
 
 **仓库中的文件不会自行创建或激活 Codex 云端计划。** 当前开发会话未提供
-创建云端定时任务或控制云端浏览器的工具，故尚未在用户账号启用定时运行，
-也没有验证该账号能在同一云端任务使用“仓库终端 + 登录浏览器”。
-这两项是上线条件，不能用本机测试替代。
+创建云端定时任务的工具，故尚未在用户账号启用定时运行。
+首次完整云端执行和计划触发仍是上线条件，不能用本机测试替代。
 
 ## 云端准备
 
@@ -33,9 +32,10 @@ Linux 参数在 `cloud/config.template.yaml`，凭据在运行时注入 ignored 
 | `PODCAST_FFMPEG` / `PODCAST_FFPROBE` | 可选，可执行文件路径 | 普通环境变量 |
 
 未提供图片服务密钥时，已有背景搜索模块使用仓库自带的兜底图片。
-DeepSeek 不用于替代指定 ChatGPT 会话的单句总结。
+DeepSeek 不生成最终单句总结；当前 Codex Cloud 任务按固定提示词直接总结正文，
+不调用 OpenAI API，也不依赖指定 ChatGPT 网页会话。
 
-网络还需要允许 36kr/ChatGPT 浏览器访问、`cn.bing.com`（现有文稿搜索）、
+网络还需要允许 36kr 网页访问、`cn.bing.com`（现有文稿搜索）、
 GitHub Release 下载域名、Edge TTS 使用的 `speech.platform.bing.com`，
 以及启用图片服务后实际返回的图片 CDN。Edge TTS 使用 WebSocket；
 域名白名单本身不证明云端代理支持其连接，必须实测。
@@ -45,20 +45,18 @@ GitHub 权限详情见 [github-output.md](github-output.md)。
 ## 启用每天 18:00
 
 1. 发布/更新云端环境，在新云端任务检出 `codex/github-output-storage`。
-2. 按 [daily-task.md](../cloud/daily-task.md) 手动执行一次。
-   在云端浏览器安全登录界面登录 ChatGPT，并验证指定会话可打开和正常回复。
-   本机浏览器登录不会自动迁移到云端；不要把 Cookie 或密码贴进聊天。
+2. 按 [daily-task.md](../cloud/daily-task.md) 手动执行一次，验证任务能通过网页搜索
+   或 HTTPS 取得 36kr 完整正文，并由当前 Codex Cloud 任务按固定提示词生成总结。
 3. 在 Scheduled 创建每日任务，把上述完整提示词作为任务说明，
    设为每天 18:00，时区 `Asia/Shanghai`，选择经过验收的云端执行环境。
-   若界面仅有本地目录/worktree，或云端缺少浏览器/仓库执行能力，先停止上线并确认账号支持。
+   若界面仅有本地目录/worktree，或云端缺少仓库终端/所需网络，先停止上线并确认账号支持。
 4. 手动触发一次计划，核对 Release 中的 video.mp4 可以播放，再观察首个正常定时运行。
    这是平台计划时间，不是严格准点 SLA；调度延迟不能靠脚本消除。
 
 官方区分了本地项目定时任务与网页后台任务；网页任务也不保留本地工作目录。
 这里把必要状态保存到 GitHub，而非依赖跨天保留某个云端目录。
 参考：[定时任务](https://learn.chatgpt.com/docs/automations)、
-[云端环境](https://learn.chatgpt.com/docs/environments/cloud-environments)、
-[浏览器登录与限制](https://learn.chatgpt.com/docs/browser)。
+[云端环境](https://learn.chatgpt.com/docs/environments/cloud-environments)。
 
 ## 运行和续跑
 
@@ -67,14 +65,15 @@ GitHub 权限详情见 [github-output.md](github-output.md)。
 ```sh
 python scripts/daily_podcast.py --date 2026-10-20 prepare
 python scripts/daily_podcast.py --date 2026-10-20 select --candidates output/daily/2026-10-20/candidates.json
-python scripts/daily_podcast.py --date 2026-10-20 accept-summary --file output/daily/2026-10-20/chat-summary.json
+python scripts/daily_podcast.py --date 2026-10-20 accept-summary --file output/daily/2026-10-20/codex-summary.json
 python scripts/daily_podcast.py --date 2026-10-20 run
 ```
 
-浏览器采集与会话交互由执行任务的 Codex 完成，Python 工具不自行登录 ChatGPT。
-`candidates.json` 必须来自原文，`chat-summary.json` 必须来自指定会话的新回复。
-脚本验证链接、日期范围、格式和来源字段；字段验证不能证明浏览器确实执行过操作，
-也不能机械验证四个事实维度，所以任务指令要求核对实际页面和回复。
+网页搜索/HTTPS 采集和最终总结由执行任务的 Codex 完成，Python 工具不登录 ChatGPT。
+`candidates.json` 必须来自完整原文；`codex-summary.json` 记录固定来源标记、文章链接
+及正文 SHA-256。脚本验证链接、日期范围、摘要格式和正文哈希；字段验证不能机械验证
+四个事实维度，所以任务指令要求当前模型对照原文自检。跨任务恢复摘要步骤时会重新
+读取选定链接，并要求正文哈希与已保存的 `article.json` 一致。
 DeepSeek 热度/争议分是估计值，不等于平台实际阅读量。
 缺乏真实候选时扩大近 3 天搜索；全站不可用时报告失败，不制造兜底。
 
@@ -114,4 +113,4 @@ python -m unittest discover -s tests -p 'test_github_output.py' -v
 ```
 
 这些测试验证控制流、筛选、恢复和数据隔离，不调用付费模型或真实 TTS。
-实际 ChatGPT 网页登录、Edge TTS 网络和云端计划必须按上述步骤单独验收。
+实际 36kr 正文获取、Edge TTS 网络和云端计划必须按上述步骤单独验收。

@@ -76,9 +76,11 @@ class DailyTests(unittest.TestCase):
         self.article = {
             **candidate(1), "fallback": "today_hot_controversial",
             "job_date": DAY, "source_commit": "a" * 40,
+            "article_text_sha256": daily.text_digest(candidate(1)["text"]),
         }
-        self.summary = {"conversation_url": daily.CHAT_URL,
+        self.summary = {"source": daily.SUMMARY_SOURCE,
                         "article_url": self.article["url"],
+                        "article_text_sha256": self.article["article_text_sha256"],
                         "summary": "2026年10月20日，甲公司董事长在北京宣布收购乙公司。"}
         self.store.files = {
             "article.json": json.dumps(self.article).encode(),
@@ -116,6 +118,7 @@ class DailyTests(unittest.TestCase):
         selected = daily.choose_article(items, [score(1), score(2)], DAY, {items[0]["url"]})
         self.assertEqual(selected["fallback"], "recent_3_days")
         self.assertEqual(selected["published_at"], items[1]["published_at"])
+        self.assertEqual(selected["article_text_sha256"], daily.text_digest(items[1]["text"]))
 
     def test_future_and_old_articles_rejected(self):
         items = [candidate(1, "2026-10-21T12:00:00+08:00"),
@@ -141,13 +144,14 @@ class DailyTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             daily.choose_article([candidate(1)], [score(1, finance=False)], DAY, set())
 
-    def test_summary_rejects_wrong_chat_multisentence_and_overlength(self):
+    def test_summary_rejects_wrong_provenance_multisentence_and_overlength(self):
         changes = [
-            {"conversation_url": "https://chatgpt.com/c/another"},
+            {"source": "another-model"},
             {"summary": "第一句。第二句。"},
             {"summary": "这是一句！"},
             {"summary": "字" * 301 + "。"},
             {"article_url": candidate(2)["url"]},
+            {"article_text_sha256": "0" * 64},
         ]
         for change in changes:
             with self.subTest(change=change), self.assertRaises(ValueError):
