@@ -1,0 +1,34 @@
+# Runtime credentials are injected by daily_podcast.py; this file contains none.
+deepseek:
+  base_url: https://api.deepseek.com
+  model: deepseek-chat
+slides:
+  output_dir: output/slides
+  width: 1920
+  height: 1080
+  font_path: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+  font_index: 0
+tts:
+  voice: zh-CN-YunxiNeural
+  rate: "+15%"
+  output_dir: output/audio
+  keep_cache: true
+ffmpeg:
+  path: ffmpeg
+  ffprobe_path: ffprobe
+render:
+  fps: 30
+  output_dir: output/avatar
+video:
+  output_dir: output/video
+  intro_video: asset/templates/started/日报片头.mp4
+pexels:
+  cache_dir: output/images
+pixabay: {}
+media:
+  max_videos: 0
+  per_page: 8
+  required_sources: [pexels]
+  min_online_media_ratio: 0.8
+search:
+  timeout: 20

@@ -1,0 +1,5 @@
+{
+  "repository": "gbnijnugyf/ai-podcast-output",
+  "private_required": true,
+  "token_environment_variable": "PODCAST_GITHUB_TOKEN"
+}

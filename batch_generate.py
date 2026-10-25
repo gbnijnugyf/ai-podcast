@@ -10,6 +10,15 @@
 
   python batch_generate.py --topics-file topics.txt --no-avatar --max-workers 3
 
+  python batch_generate.py --topics-file topics.txt --genre general
+
+  python batch_generate.py --topics-file topics.txt --genre general --duration 1 --intro 通用片头
+
+  python batch_generate.py --topics-file topics.txt --max-videos 2
+
+  # TTS 中断后：重试全部未完成的批量工作目录（复用 TTS 缓存）
+  python batch_retry_tts.py
+
 topics.txt 文件格式（每行一个 topic，空行和 # 开头的行会被忽略）：
   AI大模型最新进展
   量子计算突破
@@ -18,6 +27,7 @@ topics.txt 文件格式（每行一个 topic，空行和 # 开头的行会被忽
   新能源汽车行业动态
 """
 import os
+import json
 import argparse
 import shutil
 import subprocess
@@ -25,6 +35,7 @@ import sys
 import re
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yaml
@@ -72,7 +83,7 @@ def read_topics(file_path: str) -> list[str]:
 
 
 def create_isolated_config(base_config_path: str, topic_name: str,
-                           timestamp: str) -> tuple[str, str]:
+                           timestamp: str, job_id: str | None = None) -> tuple[str, str]:
     """基于原配置创建副本，将所有输出目录重定向到 topic 专属工作目录。
 
     Returns:
@@ -82,7 +93,9 @@ def create_isolated_config(base_config_path: str, topic_name: str,
         config = yaml.safe_load(f)
 
     safe_name = sanitize_filename(topic_name)
-    work_dir = f"output/batch/{safe_name}_{timestamp}"
+    if job_id and not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
+        raise ValueError("Invalid job ID")
+    work_dir = f"output/batch/{job_id or f'{safe_name}_{timestamp}'}"
 
     # 重定向所有输出目录到隔离的工作目录
     for section, key in ISOLATED_DIR_KEYS.items():
@@ -100,17 +113,21 @@ def create_isolated_config(base_config_path: str, topic_name: str,
 
 
 def run_single_topic(topic: str, base_config: str, extra_args: list[str],
-                     index: int, total: int) -> dict:
+                     index: int, total: int, job_id: str | None = None,
+                     keep_work_dir: bool = False) -> dict:
     """为单个 topic 运行完整的视频生成流程（隔离工作目录）。"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # UUID 防止重复主题、截断后同名主题以及同时启动的批次相互覆盖。
+    timestamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex}"
     safe_name = sanitize_filename(topic)
 
     # ---- 每个 topic 用独立配置，隔离输出目录 ----
-    topic_config, work_dir = create_isolated_config(base_config, topic, timestamp)
+    if job_id and (THIS_DIR / "output" / "batch" / job_id).exists():
+        raise ValueError("Job directory already exists; resume it instead of regenerating.")
+    topic_config, work_dir = create_isolated_config(base_config, topic, timestamp, job_id)
 
     # 最终视频输出到公共目录，方便查找
     output_path = (THIS_DIR / "output" / "video" /
-                   f"{safe_name}_{timestamp}.mp4")
+                   f"{job_id or f'{safe_name}_{timestamp}'}.mp4")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
@@ -132,7 +149,7 @@ def run_single_topic(topic: str, base_config: str, extra_args: list[str],
     elapsed = (datetime.now() - start).total_seconds()
 
     # 可选：完成后清理中间文件，最终视频已保存到公共目录
-    cleanup = not result.returncode  # 仅在成功时清理工作目录
+    cleanup = not result.returncode and not keep_work_dir
     if cleanup:
         try:
             work_dir_path = THIS_DIR / work_dir
@@ -147,6 +164,7 @@ def run_single_topic(topic: str, base_config: str, extra_args: list[str],
         "success": result.returncode == 0,
         "output": str(output_path),
         "elapsed": elapsed,
+        "work_dir": str(THIS_DIR / work_dir),
     }
 
 
@@ -162,6 +180,14 @@ def build_pass_through_args(args) -> list[str]:
         extra += ["--rate", args.rate]
     if args.no_avatar:
         extra += ["--no-avatar"]
+    if args.genre:
+        extra += ["--genre", args.genre]
+    if args.duration is not None:
+        extra += ["--duration", str(args.duration)]
+    if args.intro:
+        extra += ["--intro", args.intro]
+    if args.max_videos is not None:
+        extra += ["--max-videos", str(args.max_videos)]
     return extra
 
 
@@ -181,6 +207,9 @@ def main() -> None:
                         help="topic 列表文件（每行一个 topic）")
     parser.add_argument("--max-workers", type=int, default=2,
                         help="最大并行数，默认 2")
+    parser.add_argument("--job-id", help="单主题自动任务的固定 ID；已有任务必须续跑")
+    parser.add_argument("--keep-work-dir", action="store_true", help="保留任务资料供云端续跑")
+    parser.add_argument("--result-json", type=Path, help="保存机器可读结果")
 
     # ---------- 透传参数 ----------
     parser.add_argument("--voice", type=str,
@@ -189,11 +218,40 @@ def main() -> None:
                         help="TTS 语速，如 +10%%（透传）")
     parser.add_argument("--no-avatar", action="store_true",
                         help="跳过数字人渲染（透传）")
+    parser.add_argument("--genre", type=str, default="daily_brief",
+                        help="节目形态（透传）：daily_brief（默认）或 general")
+    parser.add_argument("--duration", type=float, default=2.0,
+                        help="口播目标时长（分钟，透传），默认 2")
+    parser.add_argument("--intro", type=str, default=None,
+                        help="片头文件名（透传，asset/templates/started/ 下）")
+    parser.add_argument("--max-videos", type=int, default=None,
+                        help="背景最多视频段数（透传；不传则默认 0）")
     parser.add_argument("--config", type=str, default="config.yaml",
                         help="基准配置文件路径，默认 config.yaml（LLM/Blender 等配置来源）")
 
     args = parser.parse_args()
+
+    from src.genre import resolve_genre
+    from src.intro import resolve_intro_path
+    try:
+        resolve_genre(args.genre)
+    except ValueError as e:
+        parser.error(str(e))
+    if args.duration <= 0:
+        parser.error("--duration 必须为正数（单位：分钟）")
+    if args.max_videos is None:
+        args.max_videos = 0
+    elif args.max_videos < 0:
+        parser.error("--max-videos 不能为负数")
+    if args.intro:
+        try:
+            resolve_intro_path(args.intro, args.config)
+        except ValueError as e:
+            parser.error(str(e))
+
     topics = read_topics(args.topics_file)
+    if args.job_id and (len(topics) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]+", args.job_id)):
+        parser.error("--job-id 需要恰好一个主题，且仅含字母、数字、下划线或连字符")
     extra_args = build_pass_through_args(args)
 
     # 确保基准配置文件存在
@@ -213,6 +271,11 @@ def main() -> None:
         print(f"  语速:      {args.rate}")
     if args.no_avatar:
         print(f"  模式:      无数字人")
+    print(f"  节目形态:  {args.genre}")
+    print(f"  目标时长:  {args.duration:g} min")
+    if args.intro:
+        print(f"  片头:      {args.intro}")
+    print(f"  max-videos: {args.max_videos}")
     print(f"{'=' * 60}\n")
 
     for i, t in enumerate(topics, 1):
@@ -225,7 +288,7 @@ def main() -> None:
         future_map = {
             executor.submit(
                 run_single_topic, topic, args.config, extra_args,
-                idx, len(topics)
+                idx, len(topics), args.job_id, args.keep_work_dir
             ): topic
             for idx, topic in enumerate(topics, 1)
         }
@@ -262,6 +325,9 @@ def main() -> None:
         print(f"     耗时: {r['elapsed']:.0f}s")
 
     print(f"\n  结果: {success_count}/{len(results)} 成功")
+    if args.result_json:
+        args.result_json.parent.mkdir(parents=True, exist_ok=True)
+        args.result_json.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     if success_count < len(results):
         sys.exit(1)
 

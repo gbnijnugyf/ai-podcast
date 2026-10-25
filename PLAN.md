@@ -349,3 +349,51 @@ Pillow 合成：
 - [ ] 添加更多幻灯片模板背景
 - [ ] 添加配置文件支持（语音选择、分辨率等）
 - [ ] 添加简单的交互界面（可选）
+
+### 步骤 11：TTS 断点缓存（重启续跑）
+
+**目标：** `--script-json` + `--bg-dir` 从 TTS 阶段重启时，复用已合成音频，避免整段重跑；视频成功后清理缓存，防止下次混用。
+
+**方案：**
+- 缓存目录：`output/audio/`（沿用现有 TTS 输出）
+- 缓存内容：`slide_XXX.mp3` + `tts_cache.json`（指纹 = narrations + voice + rate，及每页 timestamps）
+- 按页命中：指纹一致且该页 mp3 存在 → 跳过合成；否则只补缺失页
+- 指纹不一致：清空旧缓存后重新合成
+- 清理时机：话题/日报流水线视频合成成功后删除 TTS 缓存文件
+
+**实施步骤：**
+1. [x] 更新 `PLAN.md` 写入本方案
+2. [x] 改 `src/tts.py`：读/写缓存、按页跳过、指纹校验、`clear_cache()`
+3. [x] 改 `main.py`：视频成功后清理 TTS 缓存
+4. [x] 更新用法注释与 `docs/使用指南.md` / `docs/模块说明.md`
+
+### 步骤 12：背景媒资黑名单（禁止 OpenAI / ChatGPT 相关图）
+
+**目标：** 选图时排除标题/标签含 OpenAI、ChatGPT 相关字样的候选，避免品牌/产品图入镜。
+
+**方案：**
+- 选图侧（主）：`background_searcher.py` 对候选 `title`/`tags` 做子串黑名单过滤（`openai`、`chatgpt`、`chat gpt`）
+- 文案侧（辅）：`script_generator.py` 的 keyword 规则禁止用上述品牌词作搜索词
+
+**实施步骤：**
+1. [x] 更新 `PLAN.md` 写入本方案
+2. [x] 改 `src/background_searcher.py`：黑名单过滤
+3. [x] 改 `src/script_generator.py`：keyword 提示词限制
+4. [x] 更新 `docs/模块说明.md`
+
+### 步骤 13：批量 TTS 续跑脚本
+
+**目标：** 一键重试 `batch_generate.py` 未完成的 topic（工作目录仍保留），从 TTS 阶段续跑并复用缓存。
+
+**方案：**
+- 入口：`python batch_retry_tts.py`（无参数）
+- 未完成判定：`output/batch/*/` 仍存在，且含 `_config.yaml` + `slides/topic_bg` 媒资（成功时 batch 会删工作目录）
+- 文稿：优先 `work_dir/script.json`；生成侧在批量配置下同步写入；旧目录则按时间戳+标题启发式匹配 `output/script_*.json`
+- 调用：`main.py --script-json --bg-dir --config work_dir/_config.yaml --output output/video/<workdir名>.mp4`
+- TTS 缓存按隔离 config 落在 `work_dir/tts/`；视频成功后 `main.py` 清理 TTS，脚本再删除整个 work_dir
+
+**实施步骤：**
+1. [x] 更新 `PLAN.md` 写入本方案
+2. [x] `generate_video_from_report.py`：批量时写入 `script.json` / `_job.json`
+3. [x] 新增 `batch_retry_tts.py`
+4. [x] 更新用法说明

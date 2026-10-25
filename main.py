@@ -21,6 +21,7 @@ from src.slide_generator import SlideGenerator
 from src.tts import TTSEngine
 from src.renderer import Renderer
 from src.composer import VideoComposer
+from src.pipeline_state import write_stage
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -158,19 +159,26 @@ def _run_topic_pipeline(args, config: dict):
     print("=" * 50)
 
     bg_output_dir = os.path.join(config.get("slides", {}).get("output_dir", "output/slides"), "topic_bg")
+    write_stage(args.config, "background")
 
     if getattr(args, "bg_dir", None) and os.path.isdir(args.bg_dir):
         bg_files = sorted([
             os.path.join(args.bg_dir, f)
             for f in os.listdir(args.bg_dir)
-            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+            if f.lower().endswith((".jpg", ".jpeg", ".png", ".mp4", ".mov", ".webm", ".mkv"))
         ])
         bg_paths = bg_files[:len(blocks)]
-        print(f"  使用已有背景图目录: {args.bg_dir} ({len(bg_paths)} 张)")
+        print(f"  使用已有背景目录: {args.bg_dir} ({len(bg_paths)} 个)")
     else:
+        max_videos = getattr(args, "max_videos", None)
+        if max_videos is None:
+            max_videos = int((config.get("media") or {}).get("max_videos", 0) or 0)
         bg_searcher = BackgroundSearcher(args.config)
-        bg_paths = bg_searcher.download_for_script(script_data, bg_output_dir)
-        print(f"  背景图: {len(bg_paths)} 张")
+        bg_paths = bg_searcher.download_for_script(
+            script_data, bg_output_dir, max_videos=max_videos
+        )
+        n_vid = sum(1 for p in bg_paths if p.lower().endswith((".mp4", ".mov", ".webm", ".mkv")))
+        print(f"  背景媒资: {len(bg_paths)} 个（视频 {n_vid} / 图片 {len(bg_paths) - n_vid}）")
 
     # -------------------------------------------------------
     # 2. TTS 语音合成（opening + 正文 blocks）
@@ -189,7 +197,13 @@ def _run_topic_pipeline(args, config: dict):
         tts.voice = args.voice
     if args.rate:
         tts.rate = args.rate
-    audio_paths, all_timestamps = tts.synthesize_slides(all_slides_data)
+    write_stage(args.config, "tts")
+    try:
+        audio_paths, all_timestamps = tts.synthesize_slides(all_slides_data)
+    except Exception:
+        write_stage(args.config, "tts_failed")
+        raise
+    write_stage(args.config, "compose")
 
     composer = VideoComposer(args.config)
     audio_output_dir = config["tts"]["output_dir"]
@@ -243,16 +257,24 @@ def _run_topic_pipeline(args, config: dict):
     print("【第 4 步】视频合成（话题模式）")
     print("=" * 50)
 
-    intro_video = config.get("video", {}).get("intro_video", "")
-    if intro_video and not os.path.isabs(intro_video):
-        intro_video = os.path.abspath(intro_video)
-    if not intro_video or not os.path.exists(intro_video):
-        print(f"  [警告] 片头视频不存在: {intro_video}，跳过片头")
-        intro_video = None
+    from src.intro import resolve_intro_path
+
+    # CLI --intro > script JSON intro > config.video.intro_video
+    intro_name = getattr(args, "intro", None) or script_data.get("intro")
+    try:
+        intro_path = resolve_intro_path(intro_name, args.config)
+    except ValueError as e:
+        raise SystemExit(f"[错误] {e}") from e
+
+    intro_video = str(intro_path) if intro_path else None
+    if not intro_video:
+        print("  [警告] 未配置或找不到片头视频，跳过片头")
         intro_duration = 0.0
 
     if intro_video and intro_duration > 0:
         intro_video_duration = composer.get_audio_duration(intro_video)
+        print(f"  片头文件: {intro_video}")
+        print(f"  片头视频时长: {intro_video_duration:.1f}s")
         if intro_duration > intro_video_duration:
             overflow = intro_duration - intro_video_duration
             print(f"  片头口播 ({intro_duration:.1f}s) 超过片头视频 ({intro_video_duration:.1f}s)，"
@@ -261,9 +283,12 @@ def _run_topic_pipeline(args, config: dict):
             if slide_durations:
                 slide_durations[0] += overflow
 
-    from datetime import datetime
-    now = datetime.now()
-    title_text = f"{now.year}.{now.month}.{now.day}\\n热点资讯"
+    from src.genre import DEFAULT_GENRE, format_intro_title, resolve_genre
+
+    genre = resolve_genre(getattr(args, "genre", None) or script_data.get("genre") or DEFAULT_GENRE)
+    title_text = format_intro_title(genre, script_data.get("title"))
+    print(f"  节目形态: {genre.id} ({genre.display_name})")
+    print(f"  片头标题: {title_text.replace(chr(92) + 'n', ' / ')}")
 
     output_path = composer.compose_topic_video(
         bg_paths=bg_paths,
@@ -275,6 +300,10 @@ def _run_topic_pipeline(args, config: dict):
         intro_duration=intro_duration,
         title_text=title_text,
     )
+
+    write_stage(args.config, "succeeded")
+    if not config.get("tts", {}).get("keep_cache", False):
+        tts.clear_cache()
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 50)
@@ -288,7 +317,7 @@ def main():
     parser.add_argument("--text", type=str, help="讲解文本内容")
     parser.add_argument("--text-file", type=str, help="从文件读取讲解文本")
     parser.add_argument("--script-json", type=str, help="话题模式：结构化口播文稿 JSON 文件路径")
-    parser.add_argument("--bg-dir", type=str, help="话题模式：已有背景图目录（跳过图片下载，从 TTS 阶段继续）")
+    parser.add_argument("--bg-dir", type=str, help="话题模式：已有背景图目录（跳过图片下载；TTS 有缓存则按页续跑）")
     parser.add_argument("--slides-dir", type=str, help="已有幻灯片图片目录（跳过自动生成）")
     parser.add_argument("--model", type=str, default="asset/swat.fbx", help="3D 模型路径")
     parser.add_argument("--anim", type=str, default="asset/animations", help="动画 FBX 文件或目录路径")
@@ -297,7 +326,36 @@ def main():
     parser.add_argument("--rate", type=str, help="TTS 语速（如 +10%%, -10%%）")
     parser.add_argument("--no-avatar", action="store_true", help="跳过数字人渲染（无需 Blender）")
     parser.add_argument("--config", type=str, default="config.yaml", help="配置文件路径")
+    parser.add_argument(
+        "--genre", type=str, default=None,
+        help="话题模式节目形态：daily_brief（默认，热点资讯）或 general（通用，片头用脚本标题）",
+    )
+    parser.add_argument(
+        "--intro", type=str, default=None,
+        help="片头文件名（位于 asset/templates/started/，可省略 .mp4）；默认用 config.video.intro_video",
+    )
+    parser.add_argument(
+        "--max-videos", type=int, default=None,
+        help="话题背景最多使用的视频段数；不传则读 config.media.max_videos，再默认 0",
+    )
     args = parser.parse_args()
+
+    if args.max_videos is not None and args.max_videos < 0:
+        parser.error("--max-videos 不能为负数")
+
+    if args.genre:
+        from src.genre import resolve_genre
+        try:
+            resolve_genre(args.genre)
+        except ValueError as e:
+            parser.error(str(e))
+
+    if args.intro:
+        from src.intro import resolve_intro_path
+        try:
+            resolve_intro_path(args.intro, args.config)
+        except ValueError as e:
+            parser.error(str(e))
 
     config = load_config(args.config)
 
@@ -460,6 +518,8 @@ def main():
             srt_path=srt_path,
             all_frame_dirs=all_frame_dirs,
         )
+
+    tts.clear_cache()
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 50)
