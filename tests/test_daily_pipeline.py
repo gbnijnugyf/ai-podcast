@@ -16,6 +16,7 @@ from daily_storage import DailyStore, checkpoint_path, save_json
 from github_output import digest
 import batch_generate as batch
 import batch_retry_tts as retry
+from src.script_generator import ScriptGenerator, build_duration_plan
 from src.tts import TTSEngine
 
 
@@ -64,6 +65,51 @@ class TTSProxyTests(unittest.TestCase):
                 TTSEngine(str(config))
 
             context.load_verify_locations.assert_called_once_with(cafile=str(ca_bundle))
+
+
+class ScriptDurationTests(unittest.TestCase):
+    @staticmethod
+    def response(data):
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=json.dumps(data, ensure_ascii=False)),
+        )])
+
+    @staticmethod
+    def script(chars):
+        return {"title": "测试", "opening": "开场" * 5, "chapters": [{"blocks": [
+            {"keyword": f"finance market {index}", "narration": "字" * size}
+            for index, size in enumerate(chars)
+        ]}]}
+
+    def generator(self, responses):
+        generator = ScriptGenerator.__new__(ScriptGenerator)
+        generator.client = Mock()
+        generator.client.chat.completions.create.side_effect = [
+            self.response(data) for data in responses
+        ]
+        generator.model = "test-model"
+        generator.genre = SimpleNamespace(endings=("结束语",))
+        generator.plan = build_duration_plan(2.0, rate="+15%")
+        return generator
+
+    def test_rate_adjusted_two_minute_plan(self):
+        plan = build_duration_plan(2.0, rate="+15%")
+        self.assertEqual((plan["char_lo"], plan["char_hi"]), (533, 652))
+
+    def test_underlength_script_is_revised_before_media_work(self):
+        generator = self.generator([self.script([100]), self.script([55] * 10)])
+        data, ending = generator._generate_duration_script("prompt")
+        generator._append_ending(data, ending)
+        total = generator._script_char_count(data)
+        self.assertLessEqual(generator.plan["char_lo"], total)
+        self.assertLessEqual(total, generator.plan["char_hi"])
+        self.assertEqual(generator.client.chat.completions.create.call_count, 2)
+
+    def test_revisions_stop_after_two_unsuccessful_corrections(self):
+        generator = self.generator([self.script([100])] * 3)
+        with self.assertRaisesRegex(RuntimeError, "outside required"):
+            generator._generate_duration_script("prompt")
+        self.assertEqual(generator.client.chat.completions.create.call_count, 3)
 
 
 def candidate(number, published="2026-10-20T12:00:00+08:00"):
@@ -432,6 +478,11 @@ class VideoValidationTests(unittest.TestCase):
             config = {"ffmpeg": {"path": "ffmpeg", "ffprobe_path": "ffprobe"}}
             result = daily.validate_video(video, config)
             self.assertGreaterEqual(result["duration_seconds"], 1)
+            strict = {**config, "video": {
+                "min_duration_seconds": 2, "max_duration_seconds": 3,
+            }}
+            with self.assertRaisesRegex(RuntimeError, "outside required 2-3s"):
+                daily.validate_video(video, strict)
             audio = Path(directory) / "test.m4a"
             subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-vn", "-c:a", "copy", str(audio)],
                            check=True, timeout=30, capture_output=True)
