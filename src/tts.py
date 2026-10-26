@@ -25,6 +25,9 @@ class TTSEngine:
         self.voice = tts_cfg.get("voice", "zh-CN-YunxiNeural")
         self.rate = tts_cfg.get("rate", "+0%")
         self.output_dir = tts_cfg.get("output_dir", "output/audio")
+        self.proxy = next((os.environ.get(name) for name in (
+            "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"
+        ) if os.environ.get(name)), None)
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _cache_path(self) -> str:
@@ -86,7 +89,9 @@ class TTSEngine:
         self, text: str, audio_path: str
     ) -> list[dict]:
         """合成单段文本，返回时间戳列表（句子级或词级，取决于 edge-tts 版本）。"""
-        communicate = edge_tts.Communicate(text, self.voice, rate=self.rate)
+        communicate = edge_tts.Communicate(
+            text, self.voice, rate=self.rate, proxy=self.proxy
+        )
         timestamps: list[dict] = []
 
         with open(audio_path, "wb") as f:
