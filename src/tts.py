@@ -11,6 +11,7 @@ import json
 import os
 
 import edge_tts
+import edge_tts.communicate as edge_communicate
 import yaml
 
 CACHE_FILENAME = "tts_cache.json"
@@ -28,6 +29,13 @@ class TTSEngine:
         self.proxy = next((os.environ.get(name) for name in (
             "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"
         ) if os.environ.get(name)), None)
+        ca_bundle = next((os.environ.get(name) for name in (
+            "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"
+        ) if os.environ.get(name) and os.path.isfile(os.environ[name])), None)
+        if self.proxy and ca_bundle:
+            # edge-tts 7.x pins its WebSocket context to certifi, bypassing
+            # the cloud runtime's CA environment. Extend that context safely.
+            edge_communicate._SSL_CTX.load_verify_locations(cafile=ca_bundle)
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _cache_path(self) -> str:
