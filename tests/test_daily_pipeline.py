@@ -28,13 +28,18 @@ class FakeCommunicate:
 
 
 class TTSProxyTests(unittest.TestCase):
+    @staticmethod
+    def config(directory):
+        config = Path(directory) / "config.yaml"
+        config.write_text(json.dumps({
+            "tts": {"voice": "zh-CN-YunxiNeural", "rate": "+15%",
+                    "output_dir": str(Path(directory) / "audio")},
+        }), encoding="utf-8")
+        return config
+
     def test_https_proxy_is_forwarded_to_edge_tts(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "config.yaml"
-            config.write_text(json.dumps({
-                "tts": {"voice": "zh-CN-YunxiNeural", "rate": "+15%",
-                        "output_dir": str(Path(directory) / "audio")},
-            }), encoding="utf-8")
+            config = self.config(directory)
             proxy = "http://proxy.invalid:8080"
             with patch.dict(os.environ, {"HTTPS_PROXY": proxy}, clear=True), \
                     patch("src.tts.edge_tts.Communicate", return_value=FakeCommunicate()) as communicate:
@@ -46,6 +51,19 @@ class TTSProxyTests(unittest.TestCase):
             )
             self.assertEqual(Path(audio).read_bytes(), b"test-audio")
             self.assertEqual(timestamps, [])
+
+    def test_cloud_ca_is_added_to_edge_tts_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.config(directory)
+            ca_bundle = Path(directory) / "cloud-ca.pem"
+            ca_bundle.write_text("test fixture", encoding="utf-8")
+            environment = {"HTTPS_PROXY": "http://proxy.invalid:8080",
+                           "SSL_CERT_FILE": str(ca_bundle)}
+            with patch.dict(os.environ, environment, clear=True), \
+                    patch("src.tts.edge_communicate._SSL_CTX") as context:
+                TTSEngine(str(config))
+
+            context.load_verify_locations.assert_called_once_with(cafile=str(ca_bundle))
 
 
 def candidate(number, published="2026-10-20T12:00:00+08:00"):
