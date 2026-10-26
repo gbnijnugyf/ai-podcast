@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -15,9 +16,36 @@ from daily_storage import DailyStore, checkpoint_path, save_json
 from github_output import digest
 import batch_generate as batch
 import batch_retry_tts as retry
+from src.tts import TTSEngine
 
 
 DAY = "2026-10-20"
+
+
+class FakeCommunicate:
+    async def stream(self):
+        yield {"type": "audio", "data": b"test-audio"}
+
+
+class TTSProxyTests(unittest.TestCase):
+    def test_https_proxy_is_forwarded_to_edge_tts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.yaml"
+            config.write_text(json.dumps({
+                "tts": {"voice": "zh-CN-YunxiNeural", "rate": "+15%",
+                        "output_dir": str(Path(directory) / "audio")},
+            }), encoding="utf-8")
+            proxy = "http://proxy.invalid:8080"
+            with patch.dict(os.environ, {"HTTPS_PROXY": proxy}, clear=True), \
+                    patch("src.tts.edge_tts.Communicate", return_value=FakeCommunicate()) as communicate:
+                engine = TTSEngine(str(config))
+                audio, timestamps = engine.synthesize_text("测试", "proxy-check")
+
+            communicate.assert_called_once_with(
+                "测试", "zh-CN-YunxiNeural", rate="+15%", proxy=proxy,
+            )
+            self.assertEqual(Path(audio).read_bytes(), b"test-audio")
+            self.assertEqual(timestamps, [])
 
 
 def candidate(number, published="2026-10-20T12:00:00+08:00"):
