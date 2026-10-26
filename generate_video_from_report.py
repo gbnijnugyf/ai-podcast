@@ -130,6 +130,7 @@ def _make_script_generator(args):
         genre=args.genre,
         duration_min=args.duration,
         opening_sec=opening_sec,
+        rate=args.rate,
     )
 
 

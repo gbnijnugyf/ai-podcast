@@ -16,8 +16,8 @@ from openai import OpenAI
 from src.genre import DEFAULT_GENRE, resolve_genre
 from src.topic_searcher import TopicSearcher
 
-# 中文口播语速粗估：字/秒（与摘要预估一致）
-CHARS_PER_SEC = 4.5
+# 中文口播基础语速粗估；实际规划再乘 TTS rate 系数。
+CHARS_PER_SEC = 4.3
 DEFAULT_DURATION_MIN = 2.0
 DEFAULT_OPENING_SEC = 8.0
 
@@ -152,6 +152,7 @@ TEXT_TO_SCRIPT_PROMPT = """你是一个专业的短视频文稿编辑。
 def build_duration_plan(
     duration_min: float,
     opening_sec: float = DEFAULT_OPENING_SEC,
+    rate: str = "+0%",
 ) -> dict:
     """由目标分钟数与片头时长，生成写入 prompt 的结构/字数引导。
 
@@ -161,12 +162,20 @@ def build_duration_plan(
     duration_min = max(float(duration_min), 0.5)
     opening_sec = max(float(opening_sec), 3.0)
 
+    match = re.fullmatch(r"([+-])(\d+)%", str(rate).strip())
+    if not match:
+        raise ValueError(f"Invalid TTS rate: {rate}")
+    percent = int(match.group(2)) * (1 if match.group(1) == "+" else -1)
+    if not -50 <= percent <= 100:
+        raise ValueError("TTS rate must be between -50% and +100%")
+    chars_per_sec = CHARS_PER_SEC * (1 + percent / 100)
+
     total_sec = duration_min * 60
-    target_chars = int(total_sec * CHARS_PER_SEC)
+    target_chars = int(total_sec * chars_per_sec)
     char_lo = max(80, int(target_chars * 0.9))
     char_hi = int(target_chars * 1.1)
 
-    opening_chars = max(15, int(opening_sec * CHARS_PER_SEC))
+    opening_chars = max(15, int(opening_sec * chars_per_sec))
     opening_char_lo = max(12, int(opening_chars * 0.85))
     opening_char_hi = max(opening_char_lo + 1, int(opening_chars * 1.1))
 
@@ -205,6 +214,7 @@ def build_duration_plan(
 
     return {
         "duration_min": duration_min,
+        "chars_per_sec": chars_per_sec,
         "char_lo": char_lo,
         "char_hi": char_hi,
         "chapter_range": chapter_range,
@@ -226,6 +236,7 @@ class ScriptGenerator:
         genre: str | None = None,
         duration_min: float = DEFAULT_DURATION_MIN,
         opening_sec: float | None = None,
+        rate: str | None = None,
     ):
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
@@ -237,7 +248,8 @@ class ScriptGenerator:
         self.genre = resolve_genre(genre or DEFAULT_GENRE)
         self.duration_min = float(duration_min) if duration_min else DEFAULT_DURATION_MIN
         self.opening_sec = float(opening_sec) if opening_sec else DEFAULT_OPENING_SEC
-        self.plan = build_duration_plan(self.duration_min, self.opening_sec)
+        self.rate = rate or (config.get("tts", {}) or {}).get("rate", "+0%")
+        self.plan = build_duration_plan(self.duration_min, self.opening_sec, self.rate)
 
     def _style_extra(self) -> str:
         tone = (self.genre.script_tone or "").strip()
@@ -245,6 +257,56 @@ class ScriptGenerator:
 
     def _prompt_kwargs(self) -> dict:
         return {**self.plan, "style_extra": self._style_extra()}
+
+    @staticmethod
+    def _script_char_count(data: dict) -> int:
+        if not isinstance(data.get("title"), str) or not isinstance(data.get("opening", ""), str):
+            raise RuntimeError("LLM output has invalid title/opening")
+        total = len(data.get("opening", "").strip())
+        for chapter in data.get("chapters", []):
+            if not isinstance(chapter, dict) or not isinstance(chapter.get("blocks"), list):
+                raise RuntimeError("LLM output has invalid chapter blocks")
+            for block in chapter["blocks"]:
+                if not isinstance(block, dict) or not isinstance(block.get("narration"), str):
+                    raise RuntimeError("LLM output has invalid narration")
+                if not isinstance(block.get("keyword"), str) or not block["keyword"].strip():
+                    raise RuntimeError("LLM output has invalid image keyword")
+                total += len(block["narration"].strip())
+        return total
+
+    def _generate_duration_script(self, prompt: str) -> tuple[dict, str]:
+        """Generate once and allow two bounded revisions before expensive media/TTS work."""
+        ending = random.choice(self.genre.endings)
+        char_lo = max(1, self.plan["char_lo"] - len(ending))
+        char_hi = max(char_lo, self.plan["char_hi"] - len(ending))
+        messages = [
+            {"role": "system", "content": "你是专业短视频文案编辑。严格按 JSON 格式输出，不要输出任何其他内容。"},
+            {"role": "user", "content": prompt},
+        ]
+        for attempt in range(3):
+            response = self.client.chat.completions.create(
+                model=self.model, messages=messages, temperature=0.6,
+            )
+            raw = response.choices[0].message.content.strip()
+            data = self._parse_response(raw)
+            chars = self._script_char_count(data)
+            if char_lo <= chars <= char_hi:
+                return data, ending
+            if attempt == 2:
+                raise RuntimeError(
+                    f"LLM script length {chars} is outside required {char_lo}-{char_hi} characters"
+                )
+            print(f"  文稿字数 {chars}，目标 {char_lo}-{char_hi}，自动修订 {attempt + 1}/2")
+            action = "扩写" if chars < char_lo else "精简"
+            messages.extend([
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": (
+                    f"当前 JSON 的 opening 与全部 narration 共 {chars} 字，必须{action}到 "
+                    f"{char_lo}-{char_hi} 字。保持素材中的事实不变，不添加未经素材支持的事实；"
+                    "返回修订后的完整 JSON，不要输出说明。"
+                )},
+            ])
+        raise AssertionError("unreachable")
 
     def generate(self, topic: str) -> dict:
         """搜索话题资讯并生成结构化口播文稿。"""
@@ -271,20 +333,10 @@ class ScriptGenerator:
             topic=topic, materials=materials, **self._prompt_kwargs()
         )
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "你是专业短视频文案编辑。严格按 JSON 格式输出，不要输出任何其他内容。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.6,
-        )
-
-        raw = response.choices[0].message.content.strip()
-        script_data = self._parse_response(raw)
+        script_data, ending = self._generate_duration_script(prompt)
         script_data["genre"] = self.genre.id
         script_data["duration_min"] = self.duration_min
-        self._append_ending(script_data)
+        self._append_ending(script_data, ending)
         self._print_summary(script_data)
         return script_data
 
@@ -304,20 +356,10 @@ class ScriptGenerator:
         )
 
         print("  调用 LLM 转换文稿为分块口播...")
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "你是专业短视频文案编辑。严格按 JSON 格式输出，不要输出任何其他内容。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.6,
-        )
-
-        raw = response.choices[0].message.content.strip()
-        script_data = self._parse_response(raw)
+        script_data, ending = self._generate_duration_script(prompt)
         script_data["genre"] = self.genre.id
         script_data["duration_min"] = self.duration_min
-        self._append_ending(script_data)
+        self._append_ending(script_data, ending)
         self._print_summary(script_data)
         return script_data
 
@@ -366,9 +408,9 @@ class ScriptGenerator:
 
         return data
 
-    def _append_ending(self, data: dict):
+    def _append_ending(self, data: dict, ending: str | None = None):
         """在最后一个章节末尾追加预设结束语 block。"""
-        ending = random.choice(self.genre.endings)
+        ending = ending or random.choice(self.genre.endings)
         ending_block = {"keyword": "subscribe button", "narration": ending}
         data["chapters"][-1]["blocks"].append(ending_block)
 
@@ -381,9 +423,10 @@ class ScriptGenerator:
                 total_chars += len(block["narration"])
                 total_blocks += 1
 
-        estimated_duration = total_chars / CHARS_PER_SEC
+        chars_per_sec = self.plan["chars_per_sec"]
+        estimated_duration = total_chars / chars_per_sec
         opening_chars = len(data.get("opening", ""))
-        opening_est = opening_chars / CHARS_PER_SEC
+        opening_est = opening_chars / chars_per_sec
         print(f"\n  标题: {data['title']}")
         print(f"  开场: {data.get('opening', '')[:40]}...（{opening_chars} 字 / ~{opening_est:.0f}s）")
         print(f"  章节: {len(data['chapters'])} 个")
