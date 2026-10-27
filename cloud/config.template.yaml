@@ -22,8 +22,6 @@ render:
 video:
   output_dir: output/video
   intro_video: asset/templates/started/日报片头.mp4
-  min_duration_seconds: 105
-  max_duration_seconds: 135
 pexels:
   cache_dir: output/images
 pixabay: {}

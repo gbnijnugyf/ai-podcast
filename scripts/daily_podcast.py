@@ -198,18 +198,10 @@ def validate_video(path, config):
     metadata = json.loads(probe.stdout)
     kinds = {s["codec_type"] for s in metadata["streams"]}
     duration = float(metadata["format"]["duration"])
-    video_cfg = config.get("video", {}) or {}
-    minimum = float(video_cfg.get("min_duration_seconds", 1) or 1)
-    maximum = float(video_cfg.get("max_duration_seconds", 0) or 0)
-    if minimum < 1 or (maximum and maximum < minimum):
-        raise ValueError("Invalid video duration limits")
     if not {"audio", "video"} <= kinds:
         raise RuntimeError("Output must have audio, video and positive duration")
-    if not math.isfinite(duration) or duration < minimum or (maximum and duration > maximum):
-        required = f"{minimum:g}-{maximum:g}s" if maximum else f">={minimum:g}s"
-        raise RuntimeError(
-            f"Video duration {duration:.1f}s is outside required {required}"
-        )
+    if not math.isfinite(duration) or duration <= 0:
+        raise RuntimeError("Output must have audio, video and positive duration")
     decode = subprocess.run([
         config["ffmpeg"]["path"], "-v", "error", "-xerror", "-i", str(path),
         "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-",
