@@ -466,6 +466,59 @@ class CheckpointTests(unittest.TestCase):
 
 
 class VideoValidationTests(unittest.TestCase):
+    def test_upload_copy_is_compressed_only_above_cloud_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, destination = root / "master.mp4", root / "video.mp4"
+            source.write_bytes(b"x" * 100)
+            config = {"ffmpeg": {"path": "ffmpeg", "ffprobe_path": "ffprobe"},
+                      "video": {"max_upload_bytes": 90}}
+            validation = {"duration_seconds": 10.0, "size": 100, "sha256": "master"}
+
+            def transcode(command, **_):
+                Path(command[-1]).write_bytes(b"small upload")
+                return SimpleNamespace(returncode=0)
+
+            compressed = {"duration_seconds": 10.0, "size": 12, "sha256": "upload"}
+            with patch.object(daily.subprocess, "run", side_effect=transcode) as run, \
+                    patch.object(daily, "validate_video", return_value=compressed) as validate:
+                self.assertEqual(
+                    daily.prepare_upload_video(source, destination, config, validation), compressed,
+                )
+            self.assertEqual(source.stat().st_size, 100)
+            self.assertEqual(destination.read_bytes(), b"small upload")
+            self.assertIn("libx264", run.call_args.args[0])
+            validate.assert_called_once()
+
+            source.write_bytes(b"small")
+            with patch.object(daily.subprocess, "run") as run:
+                self.assertEqual(
+                    daily.prepare_upload_video(source, destination, config, validation), validation,
+                )
+            run.assert_not_called()
+            self.assertEqual(destination.read_bytes(), b"small")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
+    def test_real_upload_transcode_is_valid_and_below_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, destination = root / "master.mp4", root / "video.mp4"
+            subprocess.run([
+                "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i",
+                "sine=frequency=440:sample_rate=44100", "-t", "3",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "5",
+                "-c:a", "aac", "-pix_fmt", "yuv420p", str(source),
+            ], check=True, timeout=30, capture_output=True)
+            limit = source.stat().st_size // 2
+            config = {"ffmpeg": {"path": "ffmpeg", "ffprobe_path": "ffprobe"},
+                      "video": {"max_upload_bytes": limit}}
+            validation = daily.validate_video(source, config)
+            compressed = daily.prepare_upload_video(source, destination, config, validation)
+            self.assertLess(compressed["size"], limit)
+            self.assertEqual(compressed, daily.validate_video(destination, config))
+            self.assertEqual(source.stat().st_size, validation["size"])
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
     def test_real_short_video_acceptance_and_audio_only_rejection(self):
         with tempfile.TemporaryDirectory() as directory:

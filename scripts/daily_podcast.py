@@ -211,6 +211,40 @@ def validate_video(path, config):
     return {"duration_seconds": duration, "size": path.stat().st_size, "sha256": digest(path)}
 
 
+def prepare_upload_video(source, destination, config, validation):
+    """Copy a validated master, transcoding only when the cloud upload limit requires it."""
+    limit = int((config.get("video") or {}).get("max_upload_bytes", 0) or 0)
+    if not limit or source.stat().st_size < limit:
+        shutil.copyfile(source, destination)
+        return validation
+    duration = validation["duration_seconds"]
+    target_kbps = max(180, int(limit * 8 * 0.9 / duration / 1000))
+    audio_kbps = min(64, max(32, target_kbps // 5))
+    video_kbps = max(128, target_kbps - audio_kbps)
+    temporary = destination.with_suffix(".uploading.mp4")
+    temporary.unlink(missing_ok=True)
+    try:
+        result = subprocess.run([
+            config["ffmpeg"]["path"], "-y", "-v", "error", "-i", str(source),
+            "-map", "0:v:0", "-map", "0:a:0", "-c:v", "libx264", "-preset", "medium",
+            "-b:v", f"{video_kbps}k", "-maxrate", f"{video_kbps}k",
+            "-bufsize", f"{video_kbps * 2}k", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", f"{audio_kbps}k", "-movflags", "+faststart",
+            str(temporary),
+        ], capture_output=True, timeout=900)
+        if result.returncode or not temporary.is_file():
+            raise RuntimeError("FFmpeg could not create the upload-sized video")
+        compressed = validate_video(temporary, config)
+        if compressed["size"] >= limit:
+            raise RuntimeError(
+                f"Upload video remains too large: {compressed['size']} >= {limit} bytes"
+            )
+        temporary.replace(destination)
+        return compressed
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 class DailyPipeline:
     def __init__(self, root, day, store):
         self.root, self.day, self.store = root, day, store
@@ -368,7 +402,10 @@ class DailyPipeline:
         if media_report.get("ratio", 0) < float((config.get("media") or {}).get(
                 "min_online_media_ratio", 0) or 0):
             raise RuntimeError("Saved media coverage is below the configured publication threshold")
-        shutil.copyfile(output, upload_video)
+        if "video.mp4" in remote:
+            shutil.copyfile(output, upload_video)
+        else:
+            validation = prepare_upload_video(output, upload_video, config, validation)
         manifest_path = self.job / "manifest.json"
         manifest = {
             "version": 1, "date": self.day, "article_url": article["url"],
