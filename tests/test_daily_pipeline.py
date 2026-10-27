@@ -467,7 +467,7 @@ class CheckpointTests(unittest.TestCase):
 
 class VideoValidationTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg not installed")
-    def test_real_short_video_and_audio_only_rejection(self):
+    def test_real_short_video_acceptance_and_audio_only_rejection(self):
         with tempfile.TemporaryDirectory() as directory:
             video = Path(directory) / "test.mp4"
             subprocess.run([
@@ -478,11 +478,10 @@ class VideoValidationTests(unittest.TestCase):
             config = {"ffmpeg": {"path": "ffmpeg", "ffprobe_path": "ffprobe"}}
             result = daily.validate_video(video, config)
             self.assertGreaterEqual(result["duration_seconds"], 1)
-            strict = {**config, "video": {
+            legacy_limits = {**config, "video": {
                 "min_duration_seconds": 2, "max_duration_seconds": 3,
             }}
-            with self.assertRaisesRegex(RuntimeError, "outside required 2-3s"):
-                daily.validate_video(video, strict)
+            self.assertLess(daily.validate_video(video, legacy_limits)["duration_seconds"], 2)
             audio = Path(directory) / "test.m4a"
             subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-vn", "-c:a", "copy", str(audio)],
                            check=True, timeout=30, capture_output=True)
