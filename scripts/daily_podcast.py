@@ -21,6 +21,7 @@ import time
 
 from daily_storage import DailyStore, save_json
 from github_output import digest
+from video_archive import pack_video, restore_video, PART_BYTES
 
 ROOT = Path(__file__).resolve().parents[1]
 SHANGHAI = timezone(timedelta(hours=8))
@@ -211,38 +212,6 @@ def validate_video(path, config):
     return {"duration_seconds": duration, "size": path.stat().st_size, "sha256": digest(path)}
 
 
-def prepare_upload_video(source, destination, config, validation):
-    """Copy a validated master, transcoding only when the cloud upload limit requires it."""
-    limit = int((config.get("video") or {}).get("max_upload_bytes", 0) or 0)
-    if not limit or source.stat().st_size < limit:
-        shutil.copyfile(source, destination)
-        return validation
-    duration = validation["duration_seconds"]
-    target_kbps = max(180, int(limit * 8 * 0.9 / duration / 1000))
-    audio_kbps = min(64, max(32, target_kbps // 5))
-    video_kbps = max(128, target_kbps - audio_kbps)
-    temporary = destination.with_suffix(".uploading.mp4")
-    temporary.unlink(missing_ok=True)
-    try:
-        result = subprocess.run([
-            config["ffmpeg"]["path"], "-y", "-v", "error", "-i", str(source),
-            "-map", "0:v:0", "-map", "0:a:0", "-c:v", "libx264", "-preset", "medium",
-            "-b:v", f"{video_kbps}k", "-maxrate", f"{video_kbps}k",
-            "-bufsize", f"{video_kbps * 2}k", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", f"{audio_kbps}k", "-movflags", "+faststart",
-            str(temporary),
-        ], capture_output=True, timeout=900)
-        if result.returncode or not temporary.is_file():
-            raise RuntimeError("FFmpeg could not create the upload-sized video")
-        compressed = validate_video(temporary, config)
-        if compressed["size"] >= limit:
-            raise RuntimeError(
-                f"Upload video remains too large: {compressed['size']} >= {limit} bytes"
-            )
-        temporary.replace(destination)
-        return compressed
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 class DailyPipeline:
@@ -277,14 +246,29 @@ class DailyPipeline:
             "article": self.store.json_asset(assets["article.json"]) if "article.json" in assets else None,
         }
 
+    def restore_archive(self, manifest, assets, destination):
+        metadata = manifest["transport"]
+        paths = {}
+        for part in metadata["parts"]:
+            name = part["name"]
+            if not re.fullmatch(r"video-[0-9a-f]{64}\.zip\.[0-9]{3}", name) or name not in assets:
+                raise RuntimeError("Published daily release is missing required archive volumes")
+            paths[name] = self.store.download(assets[name], self.job / name)
+        restore_video(metadata, paths, destination, manifest["video"])
+
     def completed_result(self):
         release = self.store.release(self.tag)
         if not release or release["draft"]:
             return None
         assets = self.store.assets(self.tag)
-        if not {"video.mp4", "article.json", "summary.json", "manifest.json"} <= assets.keys():
+        if not {"article.json", "summary.json", "manifest.json"} <= assets.keys():
             raise RuntimeError("Published daily release is missing required artifacts")
         manifest = self.store.json_asset(assets["manifest.json"])
+        if manifest.get("transport"):
+            self.restore_archive(manifest, assets, self.job / "verified-video.mp4")
+            return {"completed": True, "already_done": True, "release": release["html_url"]}
+        if "video.mp4" not in assets:
+            raise RuntimeError("Published daily release is missing required artifacts")
         video = assets["video.mp4"]
         if video["size"] != manifest["video"]["size"]:
             raise RuntimeError("Published video size differs from completion manifest")
@@ -347,6 +331,9 @@ class DailyPipeline:
         remote = self.store.assets(self.tag)
         if "video.mp4" in remote:
             self.store.download(remote["video.mp4"], output)
+        elif "manifest.json" in remote and self.store.json_asset(remote["manifest.json"]).get("transport"):
+            manifest = self.store.json_asset(remote["manifest.json"])
+            self.restore_archive(manifest, remote, output)
         elif not (self.stage() == "succeeded" and output.is_file()):
             if not self.work.exists():
                 self.store.restore(self.tag, self.work, self.staging)
@@ -402,16 +389,34 @@ class DailyPipeline:
         if media_report.get("ratio", 0) < float((config.get("media") or {}).get(
                 "min_online_media_ratio", 0) or 0):
             raise RuntimeError("Saved media coverage is below the configured publication threshold")
-        if "video.mp4" in remote:
-            shutil.copyfile(output, upload_video)
+        transport = None
+        limit = int((config.get("video") or {}).get("max_upload_bytes", 0) or 0)
+        if "video.mp4" not in remote and limit and output.stat().st_size >= limit:
+            transport, video_paths = pack_video(output, self.job, min(PART_BYTES, limit - 1))
+            # Validate the locally reconstructed archive before any publication.
+            restore_video(transport, {p.name:p for p in video_paths},
+                          self.job / "verified-video.mp4", validation)
+            instructions = self.job / ("DOWNLOAD-" + validation["sha256"] + ".txt")
+            instructions.write_text(
+                "请下载 manifest.json 中 transport.parts 列出的全部分卷到同一目录，保持文件名不变。\n"
+                "用 7-Zip 打开下面第一卷并解压，自动还原完整 video.mp4，无需逐卷解压：\n"
+                + transport["parts"][0]["name"] + "\n"
+                + "分卷：\n" + "\n".join(p["name"] for p in transport["parts"]) + "\n"
+                +
+                "原片未经转码；SHA-256：" + validation["sha256"] + "\n", encoding="utf-8")
+            video_paths.append(instructions)
         else:
-            validation = prepare_upload_video(output, upload_video, config, validation)
+            shutil.copyfile(output, upload_video)
+            video_paths = [upload_video]
         manifest_path = self.job / "manifest.json"
         manifest = {
             "version": 1, "date": self.day, "article_url": article["url"],
             "published_at": article["published_at"], "fallback": article["fallback"],
             "source_commit": article["source_commit"], "media": media_report, "video": validation,
         }
+        if transport:
+            manifest["version"] = 2
+            manifest["transport"] = transport
         if "manifest.json" in remote:
             if self.store.json_asset(remote["manifest.json"]) != manifest:
                 raise RuntimeError("Completion manifest differs; refusing to overwrite")
@@ -422,7 +427,7 @@ class DailyPipeline:
         for attempt in range(3):
             try:
                 result = self.store.client.upload(self.tag, [
-                    media_path, upload_video, self.job / "article.json",
+                    media_path, *video_paths, self.job / "article.json",
                     self.job / "summary.json", manifest_path,
                 ], True)
                 break
